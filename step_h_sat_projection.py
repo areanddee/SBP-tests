@@ -1,19 +1,14 @@
 """
-Step H: SBP 4/2 advection with SAT-Projection at panel interfaces.
+Step H v2: SBP 4/2 Pcv interpolation + projection at panel interfaces.
 
-KEY CHANGE from Steps A-F:
-  Old: ghost cells + uniform [-1/16, 9/16, 9/16, -1/16] stencil everywhere
-  New: SBP Pcv/Dvc matrix operators + projection at panel boundaries
+KEY INSIGHT (fix from v1 blowup):
+  - Use Pcv matrix for interpolation (proper 2nd-order boundary stencils)
+  - Use simple [−1, 1]/dx for flux divergence (guarantees mass conservation)
+  - Project (average) face values at panel interfaces → continuity
 
-The SBP 4/2 scheme has:
-  - 4th-order interpolation/derivative in interior (rows 3..N-4)
-  - 2nd-order boundary stencils (rows 0..2, N-2..N)
-  - Non-uniform H-norm (quadrature weights) at boundaries
-  - Projection: at each shared panel edge, face values are averaged
-    from both sides → ensures continuity (Eq. 51 of Shashkin)
-
-This eliminates ghost cells entirely. The boundary coupling comes
-from the projection exchange of face values between panels.
+v1 blew up because it used the full Dvc matrix for divergence, which has
+H-norm-weighted boundary rows that created an unstable amplification loop
+when combined with the face-value projection.
 
 Usage:
     python step_h_sat_projection.py 40                  # cosine bell
@@ -25,7 +20,6 @@ import time
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, script_dir)
-# Also add project dir for sbp_staggered_1d
 project_dir = '/mnt/project'
 if os.path.isdir(project_dir):
     sys.path.insert(0, project_dir)
@@ -48,7 +42,7 @@ from advection_sbp_cubesphere import (
 
 
 # ============================================================
-# Gaussian hill IC (same as step_e)
+# Gaussian hill IC
 # ============================================================
 
 def gaussian_ic(panels, lon0=0.0, lat0=0.0, width=16.0, h0=1.0):
@@ -78,19 +72,17 @@ def gaussian_ic(panels, lon0=0.0, lat0=0.0, width=16.0, h0=1.0):
 # ============================================================
 
 def _get_bdy_face(phi_xface, phi_yface, panel, edge, N):
-    """Extract N boundary face values for a given panel edge."""
     if edge == 'E':
-        return phi_xface[panel, N, :]   # x-face at right boundary
+        return phi_xface[panel, N, :]
     elif edge == 'W':
-        return phi_xface[panel, 0, :]   # x-face at left boundary
+        return phi_xface[panel, 0, :]
     elif edge == 'N':
-        return phi_yface[panel, :, N]   # y-face at top boundary
+        return phi_yface[panel, :, N]
     elif edge == 'S':
-        return phi_yface[panel, :, 0]   # y-face at bottom boundary
+        return phi_yface[panel, :, 0]
 
 
 def _set_bdy_face(phi_xface, phi_yface, panel, edge, val, N):
-    """Set N boundary face values for a given panel edge."""
     if edge == 'E':
         phi_xface = phi_xface.at[panel, N, :].set(val)
     elif edge == 'W':
@@ -104,41 +96,25 @@ def _set_bdy_face(phi_xface, phi_yface, panel, edge, val, N):
 
 def make_projection_exchange(schedule, N):
     """
-    Build JIT-compiled projection exchange function.
-
-    At each shared panel edge:
-      1. Extract boundary face values from both sides
-      2. Apply orientation transform (R/TR = reverse)
-      3. Average (Hv-weighted, but Hv[0]=Hv[N] for 4/2 → simple average)
-      4. Write projected value back to both sides
-
-    This ensures φ_face is continuous at all 12 panel interfaces.
+    Project (average) face-interpolated φ at each shared panel edge.
+    Ensures the SAME φ_face on both sides → flux consistency → mass conservation.
     """
     def project_faces(phi_xface, phi_yface):
-        """
-        phi_xface: (6, N+1, N) — face values in x-direction
-        phi_yface: (6, N, N+1) — face values in y-direction
-        """
         for stage in schedule:
             for (face_a, edge_a), (face_b, edge_b), operation in stage:
-                # Get boundary face values from each side
                 val_a = _get_bdy_face(phi_xface, phi_yface, face_a, edge_a, N)
                 val_b = _get_bdy_face(phi_xface, phi_yface, face_b, edge_b, N)
 
-                # Apply orientation transform for A→B and B→A
                 if operation in ('R', 'TR'):
                     val_a_for_b = val_a[::-1]
                     val_b_for_a = val_b[::-1]
-                else:  # 'N' or 'T'
+                else:
                     val_a_for_b = val_a
                     val_b_for_a = val_b
 
-                # Project: weighted average (Eq. 51)
-                # For symmetric Hv (Hv[0] = Hv[N]), this is simple averaging
                 proj_a = 0.5 * (val_a + val_b_for_a)
                 proj_b = 0.5 * (val_b + val_a_for_b)
 
-                # Write back
                 phi_xface, phi_yface = _set_bdy_face(
                     phi_xface, phi_yface, face_a, edge_a, proj_a, N)
                 phi_xface, phi_yface = _set_bdy_face(
@@ -150,68 +126,52 @@ def make_projection_exchange(schedule, N):
 
 
 # ============================================================
-# RHS using SBP matrix operators + projection
+# RHS: Pcv interpolation + simple divergence + projection
 # ============================================================
 
 def make_rhs_fn(panels, N, dx):
     """
-    Build JIT-compiled RHS using full SBP 4/2 operators.
-
-    Instead of ghost cells + uniform stencil, uses:
-      Pcv: (N+1, N) matrix — interpolate φ from centers to faces
-      Dvc: (N, N+1) matrix — flux divergence from faces to centers
-
-    Both have proper 2nd-order boundary stencils and H-norm weighting.
-    The projection exchange ensures face-value continuity at panel interfaces.
+    Steps:
+      1. φ_face = Pcv @ φ_center  (proper boundary stencils from SBP 4/2)
+      2. Project φ_face at panel interfaces (simple averaging)
+      3. F = √G·v · φ_face
+      4. dF/dξ = (F[i+1] - F[i]) / dx  (simple, mass-conserving)
+      5. dφ/dt = -(1/√G) · (dFx + dFy)
     """
-    # Build 1D SBP 4/2 operators
     ops = sbp_42(N, dx)
-    Pcv = ops.Pcv   # (N+1, N) — interpolation center→face
-    Dvc = ops.Dvc   # (N, N+1) — divergence face→center
+    Pcv = ops.Pcv   # (N+1, N) interpolation center→face
 
-    # Pre-stack panel geometry
-    sqrt_G_v1_xface = jnp.stack([p.sqrt_G_v1_xface for p in panels])  # (6, N+1, N)
-    sqrt_G_v2_yface = jnp.stack([p.sqrt_G_v2_yface for p in panels])  # (6, N, N+1)
-    inv_sqrt_G = jnp.stack([p.inv_sqrt_G for p in panels])            # (6, N, N)
+    sqrt_G_v1_xface = jnp.stack([p.sqrt_G_v1_xface for p in panels])
+    sqrt_G_v2_yface = jnp.stack([p.sqrt_G_v2_yface for p in panels])
+    inv_sqrt_G = jnp.stack([p.inv_sqrt_G for p in panels])
 
-    # Build projection exchange
     schedule = create_communication_schedule()
     project_fn = make_projection_exchange(schedule, N)
 
     @jax.jit
     def rhs(phi):
-        # phi: (6, N, N) — cell-center values
-
-        # --- Interpolate to faces using Pcv ---
-        # X-direction: Pcv @ phi[p, :, j] for each panel p and column j
-        # phi_xface[p, f, j] = sum_i Pcv[f, i] * phi[p, i, j]
+        # Step 1: Interpolate to faces using Pcv
         phi_xface = jnp.einsum('fi,pij->pfj', Pcv, phi)  # (6, N+1, N)
-
-        # Y-direction: Pcv @ phi[p, i, :] for each panel p and row i
-        # phi_yface[p, i, f] = sum_j Pcv[f, j] * phi[p, i, j]
         phi_yface = jnp.einsum('fj,pij->pif', Pcv, phi)  # (6, N, N+1)
 
-        # --- Project at panel boundaries ---
+        # Step 2: Project at panel boundaries
         phi_xface, phi_yface = project_fn(phi_xface, phi_yface)
 
-        # --- Compute fluxes ---
-        Fx = sqrt_G_v1_xface * phi_xface  # (6, N+1, N)
-        Fy = sqrt_G_v2_yface * phi_yface  # (6, N, N+1)
+        # Step 3: Compute fluxes
+        Fx = sqrt_G_v1_xface * phi_xface
+        Fy = sqrt_G_v2_yface * phi_yface
 
-        # --- Divergence using Dvc ---
-        # X: dFx[p, i, j] = sum_f Dvc[i, f] * Fx[p, f, j]
-        dFx = jnp.einsum('if,pfj->pij', Dvc, Fx)  # (6, N, N)
+        # Step 4: Simple flux divergence (mass-conserving)
+        dFx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
+        dFy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dx
 
-        # Y: dFy[p, i, j] = sum_f Dvc[j, f] * Fy[p, i, f]
-        dFy = jnp.einsum('jf,pif->pij', Dvc, Fy)  # (6, N, N)
-
+        # Step 5: Tendency
         return -inv_sqrt_G * (dFx + dFy)
 
     return rhs
 
 
 def make_stepper(panels, N, dx, dt):
-    """RK4 time stepper using SBP-SAT-Projection RHS."""
     rhs_fn = make_rhs_fn(panels, N, dx)
 
     @jax.jit
@@ -253,7 +213,7 @@ def run(N, use_gaussian=False):
     ic_name = "Gaussian" if use_gaussian else "Cosine bell"
 
     print("=" * 70)
-    print(f"  SBP 4/2 + SAT-Projection")
+    print(f"  SBP 4/2 Pcv + Projection (simple div)")
     print(f"  N = {N}, CFL = {CFL}, IC = {ic_name}, full rotation")
     print("=" * 70)
 
@@ -313,7 +273,7 @@ def run(N, use_gaussian=False):
 
     print()
     print("-" * 70)
-    print(f"  N = {N}  |  {ic_name}  |  SBP 4/2 + SAT-Projection")
+    print(f"  N = {N}  |  {ic_name}  |  SBP Pcv + Projection")
     print("-" * 70)
     print(f"  l1   = {l1:.6e}")
     print(f"  l2   = {l2:.6e}")
