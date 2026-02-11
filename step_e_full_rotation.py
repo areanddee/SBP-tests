@@ -1,11 +1,10 @@
 """
-Step E v2: Full rotation with VECTORIZED RHS (no Python loops in JIT).
+Step E v3: Full rotation with Gaussian or cosine bell IC.
 
 Usage:
-    python step_e_full_rotation.py          # default N=40
-    python step_e_full_rotation.py 40
-    python step_e_full_rotation.py 80
-    python step_e_full_rotation.py 160
+    python step_e_full_rotation.py 40                  # cosine bell (default)
+    python step_e_full_rotation.py 40 --gaussian       # Gaussian hill
+    python step_e_full_rotation.py 80 --gaussian
 """
 import sys
 import os
@@ -19,8 +18,9 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-print(jax.devices()[0].platform)
+print(f"Platform: {jax.devices()[0].platform}")
 
+from grid import equiangular_to_cartesian
 from halo_exchange import create_communication_schedule
 from advection_sbp_cubesphere import (
     SBPPanelData,
@@ -97,44 +97,68 @@ def make_halo_exchange_2deep(schedule, N):
 
 
 # ============================================================
-# VECTORIZED RHS — no Python for-loops inside JIT
+# Gaussian hill IC (C∞ smooth — matches Shashkin Eq. 84 form)
+# ============================================================
+
+def gaussian_ic(panels, lon0=0.0, lat0=0.0, width=16.0, h0=1.0):
+    """
+    Gaussian hill: h = h0 * exp(-width * r^2)
+    
+    where r is great-circle distance from (lon0, lat0).
+    Shashkin uses width=16/a^2 with a=1 → width=16.
+    We use h0=1.0 (unit amplitude) for clean error analysis.
+    """
+    center = jnp.array([
+        jnp.cos(lat0) * jnp.cos(lon0),
+        jnp.cos(lat0) * jnp.sin(lon0),
+        jnp.sin(lat0)
+    ])
+    
+    phi_list = []
+    for p in panels:
+        N = p.N
+        dx = p.dx
+        pi4 = jnp.pi / 4
+        xi_c = jnp.linspace(-pi4 + dx/2, pi4 - dx/2, N)
+        XI1, XI2 = jnp.meshgrid(xi_c, xi_c, indexing='ij')
+        
+        X, Y, Z = equiangular_to_cartesian(XI1, XI2, p.face_id)
+        dot = X * center[0] + Y * center[1] + Z * center[2]
+        dot = jnp.clip(dot, -1.0, 1.0)
+        r = jnp.arccos(dot)  # great-circle distance in radians
+        
+        phi = h0 * jnp.exp(-width * r**2)
+        phi_list.append(phi)
+    
+    return jnp.stack(phi_list)
+
+
+# ============================================================
+# VECTORIZED RHS
 # ============================================================
 
 def make_rhs_fn(panels, N, dx):
-    """
-    Build a JIT-compiled RHS function with all panel data baked in.
-    No Python loops at execution time.
-    """
-    # Stack all panel geometry into (6, ...) arrays
-    sqrt_G_v1_xface = jnp.stack([p.sqrt_G_v1_xface for p in panels])  # (6, N+1, N)
-    sqrt_G_v2_yface = jnp.stack([p.sqrt_G_v2_yface for p in panels])  # (6, N, N+1)
-    inv_sqrt_G = jnp.stack([p.inv_sqrt_G for p in panels])            # (6, N, N)
+    sqrt_G_v1_xface = jnp.stack([p.sqrt_G_v1_xface for p in panels])
+    sqrt_G_v2_yface = jnp.stack([p.sqrt_G_v2_yface for p in panels])
+    inv_sqrt_G = jnp.stack([p.inv_sqrt_G for p in panels])
 
     @jax.jit
     def rhs(phi_ghost_2deep):
-        """
-        phi_ghost_2deep: (6, N+4, N+4)
-        returns: (6, N, N)
-        """
-        # X-direction interpolation: all 6 panels at once
-        phi_xext = phi_ghost_2deep[:, :, 2:N+2]  # (6, N+4, N)
+        phi_xext = phi_ghost_2deep[:, :, 2:N+2]
         phi_xface = (-1.0/16 * phi_xext[:, 0:N+1, :] +
                       9.0/16 * phi_xext[:, 1:N+2, :] +
                       9.0/16 * phi_xext[:, 2:N+3, :] +
-                     -1.0/16 * phi_xext[:, 3:N+4, :])  # (6, N+1, N)
-
+                     -1.0/16 * phi_xext[:, 3:N+4, :])
         Fx = sqrt_G_v1_xface * phi_xface
-        dFx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx  # (6, N, N)
+        dFx = (Fx[:, 1:, :] - Fx[:, :-1, :]) / dx
 
-        # Y-direction interpolation
-        phi_yext = phi_ghost_2deep[:, 2:N+2, :]  # (6, N, N+4)
+        phi_yext = phi_ghost_2deep[:, 2:N+2, :]
         phi_yface = (-1.0/16 * phi_yext[:, :, 0:N+1] +
                       9.0/16 * phi_yext[:, :, 1:N+2] +
                       9.0/16 * phi_yext[:, :, 2:N+3] +
-                     -1.0/16 * phi_yext[:, :, 3:N+4])  # (6, N, N+1)
-
+                     -1.0/16 * phi_yext[:, :, 3:N+4])
         Fy = sqrt_G_v2_yface * phi_yface
-        dFy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dx  # (6, N, N)
+        dFy = (Fy[:, :, 1:] - Fy[:, :, :-1]) / dx
 
         return -inv_sqrt_G * (dFx + dFy)
 
@@ -142,7 +166,6 @@ def make_rhs_fn(panels, N, dx):
 
 
 def make_stepper(panels, N, dx, dt, halo_fn):
-    """Build a JIT-compiled RK4 stepper."""
     rhs_fn = make_rhs_fn(panels, N, dx)
 
     @jax.jit
@@ -163,7 +186,6 @@ def make_stepper(panels, N, dx, dt, halo_fn):
 # ============================================================
 
 def compute_error_norms(phi, phi_exact, panels, dx):
-    """l1, l2, linf normalized error norms (area-weighted)."""
     num1 = num2 = den1 = den2 = 0.0
     linf_num = linf_den = 0.0
     for f in range(6):
@@ -182,12 +204,14 @@ def compute_error_norms(phi, phi_exact, panels, dx):
 # Main
 # ============================================================
 
-def run(N):
+def run(N, use_gaussian=False):
     CFL = 0.5
     order = 4
+    ic_name = "Gaussian" if use_gaussian else "Cosine bell"
 
     print("=" * 65)
-    print(f"  N = {N}, CFL = {CFL}, order = {order}, full rotation")
+    print(f"  N = {N}, CFL = {CFL}, order = {order}, IC = {ic_name}")
+    print(f"  Full rotation (T = 2π)")
     print("=" * 65)
 
     dx = float(jnp.pi / (2 * N))
@@ -196,7 +220,11 @@ def run(N):
     schedule = create_communication_schedule()
     halo_fn = make_halo_exchange_2deep(schedule, N)
 
-    phi0 = cosine_bell_ic(panels, lon0=0.0, lat0=0.0, R=1.0/3, h0=1000.0)
+    if use_gaussian:
+        phi0 = gaussian_ic(panels, lon0=0.0, lat0=0.0, width=16.0, h0=1.0)
+    else:
+        phi0 = cosine_bell_ic(panels, lon0=0.0, lat0=0.0, R=1.0/3, h0=1000.0)
+
     mass0 = total_mass(phi0, panels, dx)
     max0 = float(jnp.max(phi0))
 
@@ -209,12 +237,10 @@ def run(N):
 
     print(f"  dx = {dx:.4f}, dt = {dt:.4e}")
     print(f"  steps = {nsteps}, actual CFL = {actual_cfl:.3f}")
-    print(f"  Initial: max = {max0:.2f}, mass = {mass0:.4f}")
+    print(f"  Initial: max = {max0:.6f}, mass = {mass0:.6f}")
 
-    # Build JIT-compiled stepper
     step_fn = make_stepper(panels, N, dx, dt, halo_fn)
 
-    # JIT warmup
     print("  JIT warmup...", end=" ", flush=True)
     t0 = time.perf_counter()
     _ = step_fn(phi0)
@@ -223,7 +249,6 @@ def run(N):
 
     phi = phi0.copy()
 
-    # Run
     t_start = time.perf_counter()
     report_interval = max(1, nsteps // 8)
     for s in range(nsteps):
@@ -235,7 +260,7 @@ def run(N):
             mx = float(jnp.max(phi))
             mn = float(jnp.min(phi))
             print(f"  Step {s+1:6d}/{nsteps}: mass_err={mass_err:.2e}, "
-                  f"max={mx:.1f}, min={mn:.2f}")
+                  f"max={mx:.6f}, min={mn:.6e}")
 
     jax.block_until_ready(phi)
     elapsed = time.perf_counter() - t_start
@@ -248,15 +273,15 @@ def run(N):
 
     print()
     print("-" * 65)
-    print(f"  N = {N}  |  Full rotation results")
+    print(f"  N = {N}  |  {ic_name}  |  Full rotation results")
     print("-" * 65)
     print(f"  l1   = {l1:.6e}")
     print(f"  l2   = {l2:.6e}")
     print(f"  linf = {linf:.6e}")
     print(f"  Mass error:      {mass_err:.2e}")
-    print(f"  Max final:       {max_final:.2f}  (initial: {max0:.2f})")
-    print(f"  Min final:       {min_final:.4f}")
-    print(f"  Amplitude loss:  {(max0 - max_final)/max0:.1%}")
+    print(f"  Max final:       {max_final:.6f}  (initial: {max0:.6f})")
+    print(f"  Min final:       {min_final:.6e}")
+    print(f"  Amplitude loss:  {(max0 - max_final)/max0:.2%}")
     print(f"  Wall time:       {elapsed:.1f}s  ({nsteps/elapsed:.1f} steps/s)")
     print("=" * 65)
 
@@ -264,5 +289,10 @@ def run(N):
 
 
 if __name__ == "__main__":
-    N = int(sys.argv[1]) if len(sys.argv) > 1 else 40
-    run(N)
+    args = [a for a in sys.argv[1:] if not a.startswith('--')]
+    flags = [a for a in sys.argv[1:] if a.startswith('--')]
+
+    N = int(args[0]) if args else 40
+    use_gaussian = '--gaussian' in flags
+
+    run(N, use_gaussian=use_gaussian)
