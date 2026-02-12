@@ -298,7 +298,6 @@ def test_sbp_multi():
         l = sys_d['l']
         r = sys_d['r']
         Hv_diag = sys_d['Hv_diag']
-        project_h = sys_d['project_h']
 
         key = jax.random.PRNGKey(42)
         k1, k2, k3 = jax.random.split(key, 3)
@@ -306,16 +305,20 @@ def test_sbp_multi():
         v1 = jax.random.normal(k2, (6, N, N+1))
         v2 = jax.random.normal(k3, (6, N+1, N))
 
-        h_proj = project_h(h)
+        # --- x-direction: project h in x only, use SAME h for both terms ---
+        rights = h[:, -1, :]
+        lefts_next = jnp.roll(h[:, 0, :], -1, axis=0)
+        w_r = Hv_diag[N] / (Hv_diag[N] + Hv_diag[0])
+        w_l = Hv_diag[0] / (Hv_diag[N] + Hv_diag[0])
+        avg_x = w_r * rights + w_l * lefts_next
+        h_x = h.at[:, -1, :].set(avg_x).at[:, 0, :].set(jnp.roll(avg_x, 1, axis=0))
 
-        # --- x-direction ---
-        # Gradient term: sum_p v1[p]^T W1 (Dvc @ h_proj[p])
-        grad_x = jnp.einsum('ij,pjk->pik', Dvc, h_proj)
+        # Gradient: Dvc @ h_x
+        grad_x = jnp.einsum('ij,pjk->pik', Dvc, h_x)
         grad_x_sum = jnp.sum(v1 * W1[None,:,:] * grad_x)
 
-        # Divergence + SAT term: sum_p h_proj[p]^T Wh (Dcv @ v1[p] + SAT)
+        # Divergence + SAT: Dcv @ v1 + SAT, weighted by SAME h_x
         div_x_raw = jnp.einsum('ij,pjk->pik', Dcv, v1)
-        # Add SAT
         extrap_l = jnp.einsum('c,pcj->pj', l, v1)
         extrap_r = jnp.einsum('c,pcj->pj', r, v1)
         Hv_inv_0 = 1.0 / Hv_diag[0]
@@ -324,28 +327,19 @@ def test_sbp_multi():
         sat_N = -0.5 * Hv_inv_N * (extrap_r - jnp.roll(extrap_l, -1, axis=0))
         div_x = div_x_raw.at[:, 0, :].add(sat_0).at[:, -1, :].add(sat_N)
 
-        # Use x-projected h for divergence identity
-        # Project h along x only for this test
-        rights = h[:, -1, :]
-        lefts_next = jnp.roll(h[:, 0, :], -1, axis=0)
-        w_r = Hv_diag[N] / (Hv_diag[N] + Hv_diag[0])
-        w_l = Hv_diag[0] / (Hv_diag[N] + Hv_diag[0])
-        avg_x = w_r * rights + w_l * lefts_next
-        h_x = h.at[:, -1, :].set(avg_x).at[:, 0, :].set(jnp.roll(avg_x, 1, axis=0))
-
         div_x_sum = jnp.sum(h_x * Wh[None,:,:] * div_x)
         x_err = float(jnp.abs(grad_x_sum + div_x_sum))
 
-        # --- y-direction ---
-        # Gradient: h_proj @ Dvc^T along y
-        grad_y = jnp.einsum('pij,kj->pik', h_proj, Dvc)
-        grad_y_sum = jnp.sum(v2 * W2[None,:,:] * grad_y)
-
-        # Divergence: v2 @ DS_cv_y^T (self-periodic SAT)
-        div_y = jnp.einsum('pij,kj->pik', v2, DS_cv_y)
-        # Project h along y only
+        # --- y-direction: project h in y only, use SAME h for both terms ---
         avg_y = 0.5 * (h[:, :, 0] + h[:, :, -1])
         h_y = h.at[:, :, 0].set(avg_y).at[:, :, -1].set(avg_y)
+
+        # Gradient: h_y @ Dvc^T
+        grad_y = jnp.einsum('pij,kj->pik', h_y, Dvc)
+        grad_y_sum = jnp.sum(v2 * W2[None,:,:] * grad_y)
+
+        # Divergence: v2 @ DS_cv_y^T, weighted by SAME h_y
+        div_y = jnp.einsum('pij,kj->pik', v2, DS_cv_y)
         div_y_sum = jnp.sum(h_y * Wh[None,:,:] * div_y)
         y_err = float(jnp.abs(grad_y_sum + div_y_sum))
 
