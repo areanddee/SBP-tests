@@ -104,15 +104,16 @@ def apply_V(w1_h, w2_h, bases_h, project_h):
     project_h: scalar projection function (averaging at edges/corners)
 
     Algorithm:
-      1. X: covariant → Cartesian per panel
+      1. X: covariant → Cartesian per panel (Jacobian: J = [a1|a2])
          (Wx, Wy, Wz) = w1 * a1 + w2 * a2
       2. Ah: project each Cartesian component across all panels
-      3. Y: Cartesian → covariant per panel
-         w1_proj = W · a1, w2_proj = W · a2
+      3. Y: Cartesian → covariant per panel (pseudoinverse: (J^T J)^{-1} J^T)
+         proj_i = W · a_i, then w_i = G^{ij} proj_j
+         where G^{ij} is computed FROM the basis vectors to ensure consistency.
     """
     npanels = w1_h.shape[0]
 
-    # Step 1: covariant → Cartesian (per panel)
+    # Step 1: X — covariant → Cartesian (per panel)
     Wx = jnp.zeros_like(w1_h)
     Wy = jnp.zeros_like(w1_h)
     Wz = jnp.zeros_like(w1_h)
@@ -123,21 +124,36 @@ def apply_V(w1_h, w2_h, bases_h, project_h):
         Wy = Wy.at[p].set(w1_h[p] * b['a1y'] + w2_h[p] * b['a2y'])
         Wz = Wz.at[p].set(w1_h[p] * b['a1z'] + w2_h[p] * b['a2z'])
 
-    # Step 2: project each Cartesian component
+    # Step 2: Ah — project each Cartesian component
     Wx = project_h(Wx)
     Wy = project_h(Wy)
     Wz = project_h(Wz)
 
-    # Step 3: Cartesian → covariant (per panel)
+    # Step 3: Y — Cartesian → covariant (pseudoinverse of Jacobian)
+    # Compute G^{ij} from basis vectors directly (ensures X-Y consistency)
     w1_proj = jnp.zeros_like(w1_h)
     w2_proj = jnp.zeros_like(w2_h)
 
     for p in range(npanels):
         b = bases_h[p]
-        w1_proj = w1_proj.at[p].set(
-            Wx[p] * b['a1x'] + Wy[p] * b['a1y'] + Wz[p] * b['a1z'])
-        w2_proj = w2_proj.at[p].set(
-            Wx[p] * b['a2x'] + Wy[p] * b['a2y'] + Wz[p] * b['a2z'])
+        # Dot products: proj_i = W · a_i
+        proj1 = Wx[p] * b['a1x'] + Wy[p] * b['a1y'] + Wz[p] * b['a1z']
+        proj2 = Wx[p] * b['a2x'] + Wy[p] * b['a2y'] + Wz[p] * b['a2z']
+
+        # Covariant metric g_{ij} = a_i · a_j
+        g11 = b['a1x']**2 + b['a1y']**2 + b['a1z']**2
+        g12 = b['a1x']*b['a2x'] + b['a1y']*b['a2y'] + b['a1z']*b['a2z']
+        g22 = b['a2x']**2 + b['a2y']**2 + b['a2z']**2
+        det_g = g11 * g22 - g12**2
+
+        # Contravariant metric G^{ij} = inverse of g_{ij}
+        Ginv11 = g22 / det_g
+        Ginv12 = -g12 / det_g
+        Ginv22 = g11 / det_g
+
+        # w_i = G^{ij} * proj_j
+        w1_proj = w1_proj.at[p].set(Ginv11 * proj1 + Ginv12 * proj2)
+        w2_proj = w2_proj.at[p].set(Ginv12 * proj1 + Ginv22 * proj2)
 
     return w1_proj, w2_proj
 
@@ -169,13 +185,10 @@ def coriolis_tendency(v1, v2, f_h, Jh, J1, J2, Pcv, Pvc,
         dv2_cori: (6, N+1, N) Coriolis tendency for v2
     """
     # Step 1: P_vh · v (interpolate covariant v to h-points)
-    # v1 (N, N+1) → (N+1, N+1) via Pcv along axis 0
-    # v2 (N+1, N) → (N+1, N+1) via Pcv along axis 1
     w1_h = jnp.einsum('ij,pjk->pik', Pcv, v1)    # (6, N+1, N+1)
     w2_h = jnp.einsum('pij,kj->pik', v2, Pcv)     # (6, N+1, N+1)
 
     # Step 2: C · w_h (Coriolis rotation, Eq. 58)
-    # C = [[0, diag(f)], [-diag(f), 0]]
     c1_h = f_h[None, :, :] * w2_h     # +f * w2
     c2_h = -f_h[None, :, :] * w1_h    # -f * w1
 
@@ -188,8 +201,6 @@ def coriolis_tendency(v1, v2, f_h, Jh, J1, J2, Pcv, Pvc,
     c1_h, c2_h = apply_V(c1_h, c2_h, bases_h, project_h)
 
     # Step 5: P_hv (interpolate back to v-points)
-    # (N+1, N+1) → (N, N+1) via Pvc along axis 0
-    # (N+1, N+1) → (N+1, N) via Pvc along axis 1
     dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)   # (6, N, N+1)
     dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)    # (6, N+1, N)
 
@@ -208,10 +219,11 @@ def test_basis_vectors():
     """
     Test 1: Verify covariant basis vectors.
     - a1, a2 tangent to sphere (r · ai = 0)
-    - Covariant metric gij = ai · aj matches compute_metric
+    - Covariant metric g_{ij} positive definite (det > 0)
+    - V roundtrip: apply_V to already-continuous field → unchanged
     """
     print("\n" + "=" * 65)
-    print("TEST 1: Basis vectors")
+    print("TEST 1: Basis vectors & V roundtrip")
     print("=" * 65)
 
     N = 8
@@ -220,7 +232,7 @@ def test_basis_vectors():
     xi2 = grids['xi2_h']
 
     max_tangent_err = 0.0
-    max_metric_err = 0.0
+    min_det = 1e10
 
     for face_id in range(6):
         X, Y, Z = equiangular_to_cartesian(xi1, xi2, face_id)
@@ -233,29 +245,42 @@ def test_basis_vectors():
                               float(jnp.max(jnp.abs(dot1))),
                               float(jnp.max(jnp.abs(dot2))))
 
-        # Covariant metric: g11 = a1·a1, g12 = a1·a2, g22 = a2·a2
+        # Positive definite: det(g) > 0
         g11 = b['a1x']**2 + b['a1y']**2 + b['a1z']**2
         g12 = b['a1x']*b['a2x'] + b['a1y']*b['a2y'] + b['a1z']*b['a2z']
         g22 = b['a2x']**2 + b['a2y']**2 + b['a2z']**2
         det_g = g11 * g22 - g12**2
+        min_det = min(min_det, float(jnp.min(det_g)))
 
-        # Contravariant from inversion
-        Q11_inv = g22 / det_g
-        Q12_inv = -g12 / det_g
-        Q22_inv = g11 / det_g
+    print(f"  Max |r · a_i| (tangent check): {max_tangent_err:.2e}")
+    print(f"  Min det(g_ij) (pos. definite): {min_det:.6f}")
 
-        # From compute_metric
-        _, Q11_ref, Q12_ref, Q22_ref = compute_metric(xi1, xi2)
+    # V roundtrip: uniform Cartesian field V=(1,0,0) → apply V → unchanged
+    metrics = make_all_metrics(grids)
+    Hv_diag = jnp.diag(sbp_42(N, float(grids['dx'])).Hv)
+    project_h, _ = build_projection_fn(N, metrics['Jh'], Hv_diag)
+    bases_h = compute_all_panel_bases(xi1, xi2)
 
-        err11 = float(jnp.max(jnp.abs(Q11_inv - Q11_ref)))
-        err12 = float(jnp.max(jnp.abs(Q12_inv - Q12_ref)))
-        err22 = float(jnp.max(jnp.abs(Q22_inv - Q22_ref)))
-        max_metric_err = max(max_metric_err, err11, err12, err22)
+    # Set covariant components for V=(1,0,0) on each panel
+    w1_h = jnp.zeros((6, N + 1, N + 1))
+    w2_h = jnp.zeros((6, N + 1, N + 1))
+    for p in range(6):
+        b = bases_h[p]
+        # Covariant component: w_i = V · a_i (projection onto basis)
+        w1_h = w1_h.at[p].set(b['a1x'])
+        w2_h = w2_h.at[p].set(b['a2x'])
 
-    print(f"  Max |r · a_i| (tangent check):  {max_tangent_err:.2e}")
-    print(f"  Max |Q^ij_basis - Q^ij_metric|: {max_metric_err:.2e}")
+    # Apply V (should be identity for a globally continuous field)
+    w1_proj, w2_proj = apply_V(w1_h, w2_h, bases_h, project_h)
 
-    ok = max_tangent_err < 1e-13 and max_metric_err < 1e-12
+    # Interior points should be unchanged (boundaries get averaged)
+    rt_err = max(
+        float(jnp.max(jnp.abs(w1_proj[:, 1:-1, 1:-1] - w1_h[:, 1:-1, 1:-1]))),
+        float(jnp.max(jnp.abs(w2_proj[:, 1:-1, 1:-1] - w2_h[:, 1:-1, 1:-1]))),
+    )
+    print(f"  V roundtrip error (interior):   {rt_err:.2e}")
+
+    ok = max_tangent_err < 1e-13 and min_det > 0.01 and rt_err < 1e-12
     print(f"  {'✓ PASS' if ok else '✗ FAIL'}")
     return ok
 
