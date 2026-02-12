@@ -211,14 +211,7 @@ def compute_contravariant(v1, v2, metrics, Pvc, Pcv):
     """
     Compute contravariant velocities v¹, v² from covariant v1, v2.
 
-    Eq. 56:
-      v¹ = Q¹¹₁·v₁ + J₁⁻¹·Ph1(Jh·Q¹²h·P2h(v₂))
-      v² = J₂⁻¹·Ph2(Jh·Q¹²h·P1h(v₁)) + Q²²₂·v₂
-
-    Ph1 = Pvc along axis 0:  f → Pvc @ f
-    Ph2 = Pvc along axis 1:  f → f @ Pvc.T
-    P1h = Pcv along axis 0:  f → Pcv @ f
-    P2h = Pcv along axis 1:  f → f @ Pcv.T
+    Eq. 56 — works for single panel (N,N+1) or batched (6,N,N+1).
     """
     Q11_1 = metrics['Q11_1']
     Q12_h = metrics['Q12_h']
@@ -230,15 +223,15 @@ def compute_contravariant(v1, v2, metrics, Pvc, Pcv):
     JQ12 = Jh * Q12_h  # (N+1, N+1)
 
     # v¹: off-diagonal term
-    v2_at_h = v2 @ Pcv.T          # P2h: (N+1,N) @ (N,N+1) → (N+1,N+1)
-    cross_at_h = JQ12 * v2_at_h   # (N+1, N+1)
-    cross_at_v1 = Pvc @ cross_at_h  # Ph1: (N,N+1) @ (N+1,N+1) → (N,N+1)
+    v2_at_h = v2 @ Pcv.T          # P2h
+    cross_at_h = JQ12 * v2_at_h
+    cross_at_v1 = Pvc @ cross_at_h  # Ph1
     v1_contra = Q11_1 * v1 + cross_at_v1 / J1
 
     # v²: off-diagonal term
-    v1_at_h = Pcv @ v1             # P1h: (N+1,N) @ (N,N+1) → (N+1,N+1)
-    cross_at_h2 = JQ12 * v1_at_h   # (N+1, N+1)
-    cross_at_v2 = cross_at_h2 @ Pvc.T  # Ph2: (N+1,N+1) @ (N+1,N) → (N+1,N)
+    v1_at_h = Pcv @ v1             # P1h
+    cross_at_h2 = JQ12 * v1_at_h
+    cross_at_v2 = cross_at_h2 @ Pvc.T  # Ph2
     v2_contra = cross_at_v2 / J2 + Q22_2 * v2
 
     return v1_contra, v2_contra
@@ -353,70 +346,65 @@ def build_sat_fn(N, ops, metrics):
     """
     Build SAT correction function for all 12 edges.
 
-    At each edge, extrapolate mass flux (J·v_contra) from both panels,
-    average, and add correction to divergence at boundary.
+    CRITICAL SIGN CONVENTION:
+    The SBP boundary term at each edge has a sign:
+      East  (i=N): +1 (max boundary)
+      West  (i=0): -1 (min boundary)
+      North (j=N): +1 (max boundary)
+      South (j=0): -1 (min boundary)
 
-    The flux component depends on edge orientation:
-      E/W boundaries: flux = u1 = J1·v¹ (extrapolated along x1)
-      N/S boundaries: flux = u2 = J2·v² (extrapolated along x2)
+    For mass conservation, boundary contributions from adjacent panels
+    must cancel: sign_a * flux_a + sign_b * flux_b → 0 with SAT.
+
+    For max-min connections (E↔W): signs are +1,-1 → naturally oppose
+    For max-max (N↔N, E↔N): signs are +1,+1 → SAT must negate neighbor
+    For min-min (S↔S, S↔W): signs are -1,-1 → SAT must negate neighbor
     """
     l = ops.l   # (N,) left extrapolation
     r = ops.r   # (N,) right extrapolation
     Hv_diag = jnp.diag(ops.Hv)  # (N+1,)
     Hv_inv = 1.0 / Hv_diag      # (N+1,)
 
+    def _boundary_sign(edge):
+        """Sign of boundary term in SBP identity: +1 for max, -1 for min."""
+        return +1.0 if edge in ('E', 'N') else -1.0
+
     def extrapolate_flux(u1, u2, panel, edge):
-        """
-        Extrapolate mass flux to boundary of a panel.
-
-        u1: (6, N, N+1) = J1·v¹  (mass flux component 1)
-        u2: (6, N+1, N) = J2·v²  (mass flux component 2)
-
-        Returns: (N+1,) extrapolated flux along the edge.
-        """
+        """Extrapolate mass flux to boundary. Returns (N+1,)."""
         if edge == 'E':
-            # Extrapolate u1 along x1 using r: for each j, r·u1[panel,:,j]
-            return jnp.einsum('c,cj->j', r, u1[panel])   # (N+1,)
+            return jnp.einsum('c,cj->j', r, u1[panel])
         elif edge == 'W':
-            # Extrapolate u1 along x1 using l
-            return jnp.einsum('c,cj->j', l, u1[panel])   # (N+1,)
+            return jnp.einsum('c,cj->j', l, u1[panel])
         elif edge == 'N':
-            # Extrapolate u2 along x2 using r: for each i, u2[panel,i,:]·r
-            return jnp.einsum('ic,c->i', u2[panel], r)   # (N+1,)
+            return jnp.einsum('ic,c->i', u2[panel], r)
         elif edge == 'S':
-            # Extrapolate u2 along x2 using l
-            return jnp.einsum('ic,c->i', u2[panel], l)   # (N+1,)
+            return jnp.einsum('ic,c->i', u2[panel], l)
 
     def add_sat_correction(div, u1, u2):
-        """
-        Add SAT corrections at all 12 edges to the divergence field.
-
-        div: (6, N+1, N+1) raw divergence at h-points
-        u1:  (6, N, N+1) mass flux J1·v¹
-        u2:  (6, N+1, N) mass flux J2·v²
-
-        Returns: div with SAT corrections added at boundaries.
-        """
+        """Add SAT corrections at all 12 edges."""
         for pa, ea, pb, eb, op in EDGES:
             rev = _reverses(op)
             idx_a = _hv_inv_index(ea, N)
             idx_b = _hv_inv_index(eb, N)
+            sign_a = _boundary_sign(ea)
+            sign_b = _boundary_sign(eb)
 
-            # Extrapolate fluxes
-            flux_a = extrapolate_flux(u1, u2, pa, ea)  # (N+1,)
-            flux_b = extrapolate_flux(u1, u2, pb, eb)  # (N+1,)
+            flux_a = extrapolate_flux(u1, u2, pa, ea)
+            flux_b = extrapolate_flux(u1, u2, pb, eb)
 
-            # Align b's flux to a's orientation
             if rev:
                 flux_b_aligned = flux_b[::-1]
             else:
                 flux_b_aligned = flux_b
 
-            # SAT correction for panel a at edge_a:
-            #   -(1/2) * Hv_inv * (flux_local - flux_neighbor)
-            sat_a = -0.5 * Hv_inv[idx_a] * (flux_a - flux_b_aligned)
+            # SAT: correction to make boundary terms telescope
+            # At max boundary: SAT = -0.5 * Hv_inv * (my - sign_b/sign_a * neighbor)
+            # At min boundary: SAT = -0.5 * Hv_inv * (my - sign_b/sign_a * neighbor)
+            # where sign_ratio accounts for whether the connection is max-min or max-max
+            sign_ratio = sign_b / sign_a
 
-            # Apply to divergence
+            sat_a = -0.5 * Hv_inv[idx_a] * (flux_a - sign_ratio * flux_b_aligned)
+
             if ea == 'N':
                 div = div.at[pa, :, N].add(sat_a)
             elif ea == 'S':
@@ -426,16 +414,18 @@ def build_sat_fn(N, ops, metrics):
             elif ea == 'W':
                 div = div.at[pa, 0, :].add(sat_a)
 
-            # SAT correction for panel b at edge_b:
-            sat_b_aligned = -0.5 * Hv_inv[idx_b] * (flux_b - (flux_a[::-1] if rev else flux_a))
+            # For panel b: sign_ratio_b = sign_a / sign_b = 1/sign_ratio
+            flux_a_for_b = flux_a[::-1] if rev else flux_a
+            sat_b = -0.5 * Hv_inv[idx_b] * (flux_b - (sign_a / sign_b) * flux_a_for_b)
+
             if eb == 'N':
-                div = div.at[pb, :, N].add(sat_b_aligned)
+                div = div.at[pb, :, N].add(sat_b)
             elif eb == 'S':
-                div = div.at[pb, :, 0].add(sat_b_aligned)
+                div = div.at[pb, :, 0].add(sat_b)
             elif eb == 'E':
-                div = div.at[pb, N, :].add(sat_b_aligned)
+                div = div.at[pb, N, :].add(sat_b)
             elif eb == 'W':
-                div = div.at[pb, 0, :].add(sat_b_aligned)
+                div = div.at[pb, 0, :].add(sat_b)
 
         return div
 
@@ -492,40 +482,37 @@ def make_cubed_sphere_swe(N, H0, g):
         h_proj = project_h(h)
 
         # === Gradient (momentum equations) ===
-        # dv/dt = -g ∇(Ah·h)  [covariant gradient: no metric needed]
-        dv1_dt = jnp.zeros_like(v1)
-        dv2_dt = jnp.zeros_like(v2)
-        for p in range(6):
-            dv1_dt = dv1_dt.at[p].set(-g * (Dvc @ h_proj[p]))
-            dv2_dt = dv2_dt.at[p].set(-g * (h_proj[p] @ Dvc.T))
+        # Batch over panels: Dvc @ h_proj[p] for all p
+        dv1_dt = -g * jnp.einsum('ij,pjk->pik', Dvc, h_proj)  # (6,N,N+1)
+        dv2_dt = -g * jnp.einsum('pij,kj->pik', h_proj, Dvc)  # (6,N+1,N)
 
-        # === Divergence (continuity equation) ===
-        # Compute contravariant velocity and mass flux per panel
-        u1_all = jnp.zeros_like(v1)  # J1·v¹
-        u2_all = jnp.zeros_like(v2)  # J2·v²
-        for p in range(6):
-            v1c, v2c = compute_contravariant(v1[p], v2[p], metrics, Pvc, Pcv)
-            u1_all = u1_all.at[p].set(J1 * v1c)
-            u2_all = u2_all.at[p].set(J2 * v2c)
+        # === Contravariant velocity (vmap over panels) ===
+        v1c, v2c = _contra_vmap(v1, v2)
+        u1_all = J1 * v1c   # (6, N, N+1) mass flux
+        u2_all = J2 * v2c   # (6, N+1, N) mass flux
 
-        # Raw divergence
-        div = jnp.zeros_like(h)
-        for p in range(6):
-            div = div.at[p].set(Dcv @ u1_all[p] + u2_all[p] @ Dcv.T)
+        # === Divergence ===
+        div = (jnp.einsum('ij,pjk->pik', Dcv, u1_all) +
+               jnp.einsum('pij,kj->pik', u2_all, Dcv))  # (6,N+1,N+1)
 
         # Add SAT corrections at all 12 edges
         div = add_sat(div, u1_all, u2_all)
 
         # Continuity: dh/dt = -H0 · project(Jh⁻¹ · div)
-        dh_dt = jnp.zeros_like(h)
-        for p in range(6):
-            dh_dt = dh_dt.at[p].set(-H0 * Jh_inv * div[p])
-        dh_dt = project_h(dh_dt)
+        dh_dt = project_h(-H0 * Jh_inv * div)
 
         return dh_dt, dv1_dt, dv2_dt
 
+    # vmap contravariant velocity over panel axis
+    def _contra_single(v1_p, v2_p):
+        return compute_contravariant(v1_p, v2_p, metrics, Pvc, Pcv)
+    _contra_vmap = jax.vmap(_contra_single)
+
+    # JIT compile the RHS (static control flow in project_h/add_sat is fine)
+    rhs_jit = jax.jit(rhs)
+
     return {
-        'rhs': rhs,  # NOT jit'd yet -- corners use python loops
+        'rhs': rhs_jit,
         'project_h': project_h,
         'grids': grids,
         'metrics': metrics,
@@ -543,6 +530,7 @@ def make_cubed_sphere_swe(N, H0, g):
 # ============================================================
 
 def make_rk4_step(rhs_fn):
+    @jax.jit
     def step(h, v1, v2, dt):
         k1h, k1v1, k1v2 = rhs_fn(h, v1, v2)
         k2h, k2v1, k2v2 = rhs_fn(h + 0.5*dt*k1h, v1 + 0.5*dt*k1v1, v2 + 0.5*dt*k1v2)
@@ -567,19 +555,19 @@ def compute_energy(h, v1, v2, Wh, W1, W2, Jh, J1, J2, g, H0,
                    metrics, Pvc, Pcv):
     """
     Total energy E = (g/2)∫h²J dA + (H0/2)∫(v1·v¹ + v2·v²)J dA
-
-    The kinetic energy uses the dot product v·ṽ·J (Eq. 64).
     """
     # PE: (g/2) sum_p h²·Jh·Wh
     PE = 0.5 * g * float(jnp.sum(h**2 * Jh[None, :, :] * Wh[None, :, :]))
 
-    # KE: (H0/2) sum_p [v1·(J1·v1_contra)·W1 + v2·(J2·v2_contra)·W2]
-    KE = 0.0
-    for p in range(6):
-        v1c, v2c = compute_contravariant(v1[p], v2[p], metrics, Pvc, Pcv)
-        KE += float(jnp.sum(v1[p] * J1 * v1c * W1[None if W1.ndim == 2 else ...]))
-        KE += float(jnp.sum(v2[p] * J2 * v2c * W2[None if W2.ndim == 2 else ...]))
-    KE *= 0.5 * H0
+    # KE: vmap contravariant velocity
+    def _contra_single(v1_p, v2_p):
+        return compute_contravariant(v1_p, v2_p, metrics, Pvc, Pcv)
+    v1c, v2c = jax.vmap(_contra_single)(v1, v2)
+
+    KE = 0.5 * H0 * (
+        float(jnp.sum(v1 * J1 * v1c * W1[None, :, :])) +
+        float(jnp.sum(v2 * J2 * v2c * W2[None, :, :]))
+    )
 
     return PE + KE
 
@@ -638,7 +626,8 @@ def test_metrics():
     J_corner = float(Jh[0, 0])
     J_center = float(Jh[N // 2, N // 2])
     print(f"  J at corner: {J_corner:.6f}, at center: {J_center:.6f}")
-    print(f"  J_corner/J_center = {J_corner/J_center:.4f} (expect √2 ≈ {np.sqrt(2):.4f})")
+    J_corner_exact = 4 * np.sqrt(3) / 9  # 1/(3√3·(1/4)) at (π/4,π/4)
+    print(f"  J_corner/J_center = {J_corner/J_center:.4f} (expect 4√3/9 ≈ {J_corner_exact:.4f})")
 
     passed = j_min > 0 and det_min > 0 and det_err < 1e-12
     print(f"  {'✓ PASS' if passed else '✗ FAIL'}")
@@ -780,9 +769,17 @@ def test_mass_conservation():
 
     print(f"  N = {N}, CFL = {CFL}, dt = {dt:.6e}, steps = {nsteps}")
     print(f"  Initial mass: {mass0:.10e}")
+    print(f"  JIT compiling RK4 step (first call)...", flush=True)
+
+    # Warmup JIT
+    import time as _time
+    t0 = _time.time()
+    h, v1, v2 = step_fn(h, v1, v2, dt)
+    jax.block_until_ready(h)
+    print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
 
     max_merr = 0.0
-    for s in range(nsteps):
+    for s in range(1, nsteps):  # already did step 0 as warmup
         h, v1, v2 = step_fn(h, v1, v2, dt)
         if (s + 1) % 25 == 0:
             mass = compute_mass(h, Wh, Jh)
@@ -839,6 +836,15 @@ def test_energy():
     results = []
 
     print(f"  N = {N}, T = {T_end:.4f}")
+    print(f"  JIT compiling...", flush=True)
+
+    # Warmup JIT with smallest CFL (most steps, compile once)
+    import time as _time
+    t0 = _time.time()
+    _h, _v1, _v2 = step_fn(h0, v1_0, v2_0, 0.01 * dx / c)
+    jax.block_until_ready(_h)
+    print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
+
     print(f"\n  {'CFL':>6} {'dt':>12} {'steps':>7} {'ΔE/E':>12} {'rate':>8}")
     print("  " + "-" * 50)
 
