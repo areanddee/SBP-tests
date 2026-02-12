@@ -381,13 +381,20 @@ def build_sat_fn(N, ops, metrics):
             return jnp.einsum('ic,c->i', u2[panel], l)
 
     def add_sat_correction(div, u1, u2):
-        """Add SAT corrections at all 12 edges."""
+        """Add SAT corrections at all 12 edges.
+        
+        Correct formula derived from SBP identity:
+          At max boundary (sign=+1): SAT = -(1/2)*Hv_inv*(own + s_a*s_b*nbr)
+          At min boundary (sign=-1): SAT = +(1/2)*Hv_inv*(own + s_a*s_b*nbr)
+          Unified: SAT = -sign_own * (1/2) * Hv_inv * (own + s_a*s_b * nbr_aligned)
+        """
         for pa, ea, pb, eb, op in EDGES:
             rev = _reverses(op)
             idx_a = _hv_inv_index(ea, N)
             idx_b = _hv_inv_index(eb, N)
             sign_a = _boundary_sign(ea)
             sign_b = _boundary_sign(eb)
+            ss = sign_a * sign_b  # product of boundary signs
 
             flux_a = extrapolate_flux(u1, u2, pa, ea)
             flux_b = extrapolate_flux(u1, u2, pb, eb)
@@ -397,13 +404,8 @@ def build_sat_fn(N, ops, metrics):
             else:
                 flux_b_aligned = flux_b
 
-            # SAT: correction to make boundary terms telescope
-            # At max boundary: SAT = -0.5 * Hv_inv * (my - sign_b/sign_a * neighbor)
-            # At min boundary: SAT = -0.5 * Hv_inv * (my - sign_b/sign_a * neighbor)
-            # where sign_ratio accounts for whether the connection is max-min or max-max
-            sign_ratio = sign_b / sign_a
-
-            sat_a = -0.5 * Hv_inv[idx_a] * (flux_a - sign_ratio * flux_b_aligned)
+            # SAT for panel a
+            sat_a = -sign_a * 0.5 * Hv_inv[idx_a] * (flux_a + ss * flux_b_aligned)
 
             if ea == 'N':
                 div = div.at[pa, :, N].add(sat_a)
@@ -414,9 +416,9 @@ def build_sat_fn(N, ops, metrics):
             elif ea == 'W':
                 div = div.at[pa, 0, :].add(sat_a)
 
-            # For panel b: sign_ratio_b = sign_a / sign_b = 1/sign_ratio
-            flux_a_for_b = flux_a[::-1] if rev else flux_a
-            sat_b = -0.5 * Hv_inv[idx_b] * (flux_b - (sign_a / sign_b) * flux_a_for_b)
+            # SAT for panel b
+            flux_a_aligned = flux_a[::-1] if rev else flux_a
+            sat_b = -sign_b * 0.5 * Hv_inv[idx_b] * (flux_b + ss * flux_a_aligned)
 
             if eb == 'N':
                 div = div.at[pb, :, N].add(sat_b)
