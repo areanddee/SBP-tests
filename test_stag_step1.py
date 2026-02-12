@@ -347,9 +347,15 @@ def test_mass_conservation():
 # ============================================================
 
 def test_energy_conservation():
-    """Energy should be conserved to time-stepping accuracy."""
+    """
+    Energy conservation diagnostic: sweep CFL to determine if drift is
+    spatial (constant) or temporal (scales as dt^p).
+
+    If spatial discretization conserves energy exactly (SBP guarantee),
+    then ΔE/E should scale as dt^p where p ≥ 4 for RK4.
+    """
     print("\n" + "=" * 65)
-    print("TEST 4: Energy Conservation (10 wave periods)")
+    print("TEST 4: Energy Conservation — CFL sweep (10 wave periods)")
     print("=" * 65)
 
     H0 = 1.0
@@ -360,7 +366,6 @@ def test_energy_conservation():
     k = 4 * np.pi / L
     T_period = 2 * np.pi / (c * k)
     A_wave = 0.1
-    CFL = 0.3
 
     sys_dict = make_1d_swe_system(N, L, H0, g)
     step_fn = make_rk4_step(sys_dict['rhs'])
@@ -371,28 +376,60 @@ def test_energy_conservation():
     x_v = jnp.linspace(0, L, N + 1)
     x_c = (jnp.arange(N) + 0.5) * dx
 
-    h = A_wave * jnp.cos(k * x_v)
-    u = A_wave * np.sqrt(g / H0) * jnp.cos(k * x_c)
+    h0 = A_wave * jnp.cos(k * x_v)
+    u0 = A_wave * np.sqrt(g / H0) * jnp.cos(k * x_c)
+    E0 = compute_energy(h0, u0, Hv_diag, Hc_diag, g, H0)
 
-    E0 = compute_energy(h, u, Hv_diag, Hc_diag, g, H0)
-
-    dt = CFL * dx / c
     T_end = 10 * T_period
-    nsteps = int(np.ceil(T_end / dt))
-    dt = T_end / nsteps
 
-    for s in range(nsteps):
-        h, u = step_fn(h, u, dt)
+    CFLs = [0.4, 0.2, 0.1, 0.05, 0.025]
+    results = []
 
-    E_final = compute_energy(h, u, Hv_diag, Hc_diag, g, H0)
-    rel_change = abs(E_final - E0) / E0
+    print(f"  N = {N}, T = {T_end:.4f} (10 periods)")
+    print()
+    print(f"  {'CFL':>6} {'dt':>12} {'steps':>7} {'ΔE/E':>12} {'rate':>8}")
+    print("  " + "-" * 50)
 
-    print(f"  E(0)     = {E0:.10e}")
-    print(f"  E(final) = {E_final:.10e}")
-    print(f"  Relative change: {rel_change:.2e}")
-    print(f"  (Limited by RK4 time-stepping, not spatial discretization)")
+    for CFL in CFLs:
+        dt = CFL * dx / c
+        nsteps = int(np.ceil(T_end / dt))
+        dt = T_end / nsteps
 
-    passed = rel_change < 1e-6
+        h, u = h0.copy(), u0.copy()
+        for _ in range(nsteps):
+            h, u = step_fn(h, u, dt)
+
+        E_final = compute_energy(h, u, Hv_diag, Hc_diag, g, H0)
+        rel_change = abs(E_final - E0) / E0
+
+        if results:
+            rate = np.log2(results[-1]['err'] / rel_change) / \
+                   np.log2(results[-1]['dt'] / dt)
+            rate_str = f"{rate:8.2f}"
+        else:
+            rate_str = "     ---"
+
+        results.append({'CFL': CFL, 'dt': dt, 'err': rel_change})
+        print(f"  {CFL:6.3f} {dt:12.6e} {nsteps:7d} {rel_change:12.4e} {rate_str}")
+
+    # Check: does it scale with dt?
+    final_rate = np.log2(results[-2]['err'] / results[-1]['err']) / \
+                 np.log2(results[-2]['dt'] / results[-1]['dt'])
+
+    print()
+    print(f"  Final dt-scaling rate: {final_rate:.2f}")
+    if final_rate > 3.5:
+        print(f"  → Spatial discretization conserves energy exactly.")
+        print(f"  → Drift is RK4 time-stepping error (dt^{final_rate:.1f}).")
+        passed = True
+    elif final_rate < 0.5:
+        print(f"  → Energy error does NOT scale with dt.")
+        print(f"  → Spatial energy leak detected!")
+        passed = False
+    else:
+        print(f"  → Intermediate scaling — check for mixed spatial/temporal error.")
+        passed = final_rate > 2.5
+
     print(f"  {'✓ PASS' if passed else '✗ FAIL'}")
     return passed
 
