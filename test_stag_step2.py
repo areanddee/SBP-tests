@@ -197,21 +197,25 @@ def test_sbp_2d():
         v1 = jax.random.normal(k2, (N, N+1))
         v2 = jax.random.normal(k3, (N+1, N))
 
-        Ah = A @ h @ A
+        # x-direction SBP: project h along x only (A @ h)
+        # For each column j: v1[:,j]^T Hc DP_vc h[:,j] + (Ah)[:,j]^T Hv DP_cv v1[:,j] = 0
+        Ah_x = A @ h   # project along axis 0 (x)
+        x_grad = jnp.sum(v1 * W1 * (DP_vc @ h))
+        x_div  = jnp.sum(Ah_x * Wh * (DP_cv @ v1))
+        x_err = float(jnp.abs(x_grad + x_div))
 
-        # Gradient terms: v^T Hv Dhv h
-        grad_term = (jnp.sum(v1 * W1 * (DP_vc @ h)) +
-                     jnp.sum(v2 * W2 * (h @ DP_vc.T)))
+        # y-direction SBP: project h along y only (h @ A)
+        # For each row i: v2[i,:]^T Hc DP_vc h[i,:] + (hA)[i,:]^T Hv DP_cv v2[i,:] = 0
+        Ah_y = h @ A    # project along axis 1 (y)
+        y_grad = jnp.sum(v2 * W2 * (h @ DP_vc.T))
+        y_div  = jnp.sum(Ah_y * Wh * (v2 @ DP_cv.T))
+        y_err = float(jnp.abs(y_grad + y_div))
 
-        # Divergence terms: h^T Hh Dvh v
-        div_term = (jnp.sum(Ah * Wh * (DP_cv @ v1)) +
-                    jnp.sum(Ah * Wh * (v2 @ DP_cv.T)))
-
-        err = float(jnp.abs(grad_term + div_term))
+        err = max(x_err, y_err)
         ok = err < 1e-10
         passed = passed and ok
         status = "✓ PASS" if ok else "✗ FAIL"
-        print(f"  N = {N:4d}:  |grad + div| = {err:.2e}  {status}")
+        print(f"  N = {N:4d}:  x: {x_err:.2e}  y: {y_err:.2e}  {status}")
 
     return passed
 
