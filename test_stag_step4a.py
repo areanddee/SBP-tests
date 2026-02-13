@@ -398,18 +398,22 @@ def test_energy_neutrality():
     dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
                                       Pcv, Pvc, bases_h, project_h)
 
-    # Energy rate from Coriolis: v^T Hv Jv Q (dv_cori)
-    # = H0 * sum [v1_contra * J1 * dv1_c * W1 + v2_contra * J2 * dv2_c * W2]
+    # Energy rate: dKE/dt = H0 * v^T Hv Jv Q (Fv)
+    # Apply Q to Fv (the Coriolis tendency), then dot with v
+    dv1c_c, dv2c_c = jax.vmap(
+        lambda dv1p, dv2p: compute_contravariant(dv1p, dv2p, metrics, Pvc, Pcv)
+    )(dv1_c, dv2_c)
+
+    dKE_cori = H0 * (
+        float(jnp.sum(v1 * J1 * dv1c_c * W1[None])) +
+        float(jnp.sum(v2 * J2 * dv2c_c * W2[None]))
+    )
+
+    # KE for normalization: apply Q to v
     v1c, v2c = jax.vmap(
         lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
     )(v1, v2)
 
-    dKE_cori = H0 * (
-        float(jnp.sum(v1c * J1 * dv1_c * W1[None])) +
-        float(jnp.sum(v2c * J2 * dv2_c * W2[None]))
-    )
-
-    # Also compute KE for normalization
     KE = 0.5 * H0 * (
         float(jnp.sum(v1 * J1 * v1c * W1[None])) +
         float(jnp.sum(v2 * J2 * v2c * W2[None]))
@@ -430,14 +434,18 @@ def test_energy_neutrality():
 
         dv1_t, dv2_t = coriolis_tendency(v1_t, v2_t, f_h, Jh, J1, J2,
                                           Pcv, Pvc, bases_h, project_h)
+        dv1c_t, dv2c_t = jax.vmap(
+            lambda dv1p, dv2p: compute_contravariant(dv1p, dv2p, metrics, Pvc, Pcv)
+        )(dv1_t, dv2_t)
+
+        dKE_t = H0 * (
+            float(jnp.sum(v1_t * J1 * dv1c_t * W1[None])) +
+            float(jnp.sum(v2_t * J2 * dv2c_t * W2[None]))
+        )
+
         v1c_t, v2c_t = jax.vmap(
             lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
         )(v1_t, v2_t)
-
-        dKE_t = H0 * (
-            float(jnp.sum(v1c_t * J1 * dv1_t * W1[None])) +
-            float(jnp.sum(v2c_t * J2 * dv2_t * W2[None]))
-        )
         KE_t = 0.5 * H0 * (
             float(jnp.sum(v1_t * J1 * v1c_t * W1[None])) +
             float(jnp.sum(v2_t * J2 * v2c_t * W2[None]))
