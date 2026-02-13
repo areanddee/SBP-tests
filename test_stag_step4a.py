@@ -168,47 +168,38 @@ def apply_V(w1_h, w2_h, bases_h, project_h):
 def coriolis_tendency(v1, v2, f_h, Jh, J1, J2, Pcv, Pvc,
                       bases_h, project_h, use_V=True):
     """
-    Compute Coriolis tendency using Eq. 63 (use_V=True) or Eq. 57 (use_V=False).
+    Compute Coriolis tendency.
 
-    Eq. 63: F·v = J_v^{-1} P_hv V J_h^2 C P_vh v
-    Eq. 57: F·v = P_hv C P_vh J_v v
+    Eq. 62 (use_V=True):  F = P_hv V C P_vh J_v
+      Derived from energy-neutral Eq. 59 on cubed sphere (J commutes with V).
+      1. w = J_v · v           (multiply by J at v-points)
+      2. w_h = P_vh · w        (interpolate to h-points)
+      3. c_h = C · w_h         (Coriolis rotation)
+      4. c_h = V(c_h)          (edge-continuity projection)
+      5. F = P_hv · c_h        (interpolate back to v-points)
+
+    Eq. 57 (use_V=False): F = P_hv C P_vh J_v
+      Same but skip V (edge-discontinuous).
     """
+    # Step 1: multiply by J at v-points
+    w1 = v1 * J1[None, :, :]
+    w2 = v2 * J2[None, :, :]
+
+    # Step 2: interpolate to h-points
+    w1_h = jnp.einsum('ij,pjk->pik', Pcv, w1)    # (6, N+1, N+1)
+    w2_h = jnp.einsum('pij,kj->pik', w2, Pcv)     # (6, N+1, N+1)
+
+    # Step 3: Coriolis rotation at h-points
+    c1_h = f_h[None, :, :] * w2_h      # +f * w2
+    c2_h = -f_h[None, :, :] * w1_h     # -f * w1
+
+    # Step 4: V operator (edge-continuity via Cartesian)
     if use_V:
-        # Eq. 63: J_v^{-1} P_hv V J_h^2 C P_vh v
-        w1_h = jnp.einsum('ij,pjk->pik', Pcv, v1)
-        w2_h = jnp.einsum('pij,kj->pik', v2, Pcv)
-
-        c1_h = f_h[None, :, :] * w2_h
-        c2_h = -f_h[None, :, :] * w1_h
-
-        Jh2 = Jh**2
-        c1_h = c1_h * Jh2[None, :, :]
-        c2_h = c2_h * Jh2[None, :, :]
-
         c1_h, c2_h = apply_V(c1_h, c2_h, bases_h, project_h)
 
-        dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)
-        dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)
-
-        dv1 = dv1 / J1[None, :, :]
-        dv2 = dv2 / J2[None, :, :]
-    else:
-        # Eq. 57: P_hv C P_vh J_v v  (no V, no J_h^2)
-        # 1. Multiply by J at v-points
-        w1_J = v1 * J1[None, :, :]
-        w2_J = v2 * J2[None, :, :]
-
-        # 2. Interpolate to h-points
-        w1_h = jnp.einsum('ij,pjk->pik', Pcv, w1_J)
-        w2_h = jnp.einsum('pij,kj->pik', w2_J, Pcv)
-
-        # 3. Coriolis rotation
-        c1_h = f_h[None, :, :] * w2_h
-        c2_h = -f_h[None, :, :] * w1_h
-
-        # 4. Interpolate back to v-points
-        dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)
-        dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)
+    # Step 5: interpolate back to v-points
+    dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)   # (6, N, N+1)
+    dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)    # (6, N+1, N)
 
     return dv1, dv2
 
@@ -413,8 +404,8 @@ def test_energy_neutrality():
     for label, use_V, ke_fn in [
         ("Eq57, full KE",  False, kinetic_energy_full),
         ("Eq57, diag KE",  False, kinetic_energy_diag),
-        ("Eq63, full KE",  True,  kinetic_energy_full),
-        ("Eq63, diag KE",  True,  kinetic_energy_diag),
+        ("Eq62, full KE",  True,  kinetic_energy_full),
+        ("Eq62, diag KE",  True,  kinetic_energy_diag),
     ]:
         max_ratio = 0.0
         for seed in [42, 123, 999, 2025]:
