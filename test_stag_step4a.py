@@ -400,37 +400,22 @@ def test_energy_neutrality_flat():
         """KE = (1/2) sum(v1^2 W1 + v2^2 W2) with J=1, Q=I."""
         return 0.5 * (jnp.sum(v1**2 * W1) + jnp.sum(v2**2 * W2))
 
+    # Exact inner product: v^T H Fv must be zero for energy neutrality
     max_ratio = 0.0
     for seed in [42, 123, 999, 2025]:
         key = jax.random.PRNGKey(seed)
         k1, k2 = jax.random.split(key)
         v1 = jax.random.normal(k1, (N, N + 1))
         v2 = jax.random.normal(k2, (N + 1, N))
-
         dv1, dv2 = flat_coriolis(v1, v2)
-
-        # Finite difference
-        eps = 1e-5
-        KE_plus  = flat_KE(v1 + eps * dv1, v2 + eps * dv2)
-        KE_minus = flat_KE(v1 - eps * dv1, v2 - eps * dv2)
-        dKE = float((KE_plus - KE_minus) / (2 * eps))
+        ip = float(jnp.sum(v1 * dv1 * W1) + jnp.sum(v2 * dv2 * W2))
         KE = float(flat_KE(v1, v2))
-        ratio = abs(dKE) / KE if KE > 0 else 0.0
+        ratio = abs(ip) / KE if KE > 0 else 0.0
         max_ratio = max(max_ratio, ratio)
 
-    # Also test via exact inner product: v^T H Fv
-    key = jax.random.PRNGKey(42)
-    k1, k2 = jax.random.split(key)
-    v1 = jax.random.normal(k1, (N, N + 1))
-    v2 = jax.random.normal(k2, (N + 1, N))
-    dv1, dv2 = flat_coriolis(v1, v2)
-    exact_ip = float(jnp.sum(v1 * dv1 * W1) + jnp.sum(v2 * dv2 * W2))
-    KE = float(flat_KE(v1, v2))
+    print(f"  max |v^T H Fv| / KE = {max_ratio:.2e}")
 
-    print(f"  FD:    max|dKE/dt|/KE = {max_ratio:.2e}")
-    print(f"  Exact: v^T H Fv / KE  = {abs(exact_ip)/KE:.2e}")
-
-    ok = max_ratio < 1e-12 and abs(exact_ip)/KE < 1e-13
+    ok = max_ratio < 1e-13
     print(f"  {'✓ PASS' if ok else '✗ FAIL'}")
     return ok
 
@@ -457,34 +442,15 @@ def test_energy_neutrality():
 
     bases_h = compute_all_panel_bases(grids['xi1_h'], grids['xi2_h'])
 
-    f_val = 1e-4
+    f_val = 1.0  # Large f to amplify any energy leak
     f_h = f_val * jnp.ones((N + 1, N + 1))
 
-    def kinetic_energy_full(v1, v2):
-        """Full KE with Q12 cross-terms (Eq. 64)."""
-        v1c, v2c = jax.vmap(
-            lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
-        )(v1, v2)
-        return 0.5 * H0 * (
-            jnp.sum(v1 * J1 * v1c * W1[None]) +
-            jnp.sum(v2 * J2 * v2c * W2[None])
-        )
-
-    def kinetic_energy_diag(v1, v2):
-        """Diagonal-only KE (Q12=0)."""
-        Q11 = metrics['Q11_1']
-        Q22 = metrics['Q22_2']
-        return 0.5 * H0 * (
-            jnp.sum(v1**2 * J1 * Q11 * W1[None]) +
-            jnp.sum(v2**2 * J2 * Q22 * W2[None])
-        )
-
     all_ok = True
-    for label, use_V, ke_fn in [
-        ("Eq57, full KE",  False, kinetic_energy_full),
-        ("Eq57, diag KE",  False, kinetic_energy_diag),
-        ("Eq62, full KE",  True,  kinetic_energy_full),
-        ("Eq62, diag KE",  True,  kinetic_energy_diag),
+    for label, use_V, ip_fn in [
+        ("Eq57, full",  False, "full"),
+        ("Eq57, diag",  False, "diag"),
+        ("Eq62, full",  True,  "full"),
+        ("Eq62, diag",  True,  "diag"),
     ]:
         max_ratio = 0.0
         for seed in [42, 123, 999, 2025]:
@@ -496,16 +462,42 @@ def test_energy_neutrality():
             dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
                                               Pcv, Pvc, bases_h, project_h,
                                               use_V=use_V)
-            eps = 1e-5
-            KE_plus  = ke_fn(v1 + eps * dv1_c, v2 + eps * dv2_c)
-            KE_minus = ke_fn(v1 - eps * dv1_c, v2 - eps * dv2_c)
-            dKE = float((KE_plus - KE_minus) / (2 * eps))
-            KE = float(ke_fn(v1, v2))
-            ratio = abs(dKE) / KE if KE > 0 else 0.0
+
+            if ip_fn == "full":
+                # v^T (Hv Jv Q) Fv — apply Q to Fv, then dot with v
+                dv1c, dv2c = jax.vmap(
+                    lambda d1, d2: compute_contravariant(d1, d2, metrics, Pvc, Pcv)
+                )(dv1_c, dv2_c)
+                ip = H0 * float(
+                    jnp.sum(v1 * J1 * dv1c * W1[None]) +
+                    jnp.sum(v2 * J2 * dv2c * W2[None])
+                )
+                # KE for normalization
+                v1c, v2c = jax.vmap(
+                    lambda a, b: compute_contravariant(a, b, metrics, Pvc, Pcv)
+                )(v1, v2)
+                KE = 0.5 * H0 * float(
+                    jnp.sum(v1 * J1 * v1c * W1[None]) +
+                    jnp.sum(v2 * J2 * v2c * W2[None])
+                )
+            else:
+                # Diagonal only: v^T (Hv Jv Q_diag) Fv
+                Q11 = metrics['Q11_1']
+                Q22 = metrics['Q22_2']
+                ip = H0 * float(
+                    jnp.sum(v1 * dv1_c * J1 * Q11 * W1[None]) +
+                    jnp.sum(v2 * dv2_c * J2 * Q22 * W2[None])
+                )
+                KE = 0.5 * H0 * float(
+                    jnp.sum(v1**2 * J1 * Q11 * W1[None]) +
+                    jnp.sum(v2**2 * J2 * Q22 * W2[None])
+                )
+
+            ratio = abs(ip) / KE if KE > 0 else 0.0
             max_ratio = max(max_ratio, ratio)
 
         status = '✓' if max_ratio < 1e-12 else '✗'
-        print(f"  {status} {label:20s}  max|dKE/dt|/KE = {max_ratio:.2e}")
+        print(f"  {status} {label:20s}  |v^T H_v J_v Q Fv|/KE = {max_ratio:.2e}")
         if max_ratio > 1e-12:
             all_ok = False
 
