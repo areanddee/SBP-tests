@@ -363,13 +363,13 @@ def test_V_edge_continuity():
 
 def test_energy_neutrality():
     """
-    Test 3: Coriolis is energy-neutral.
+    Test 3: Coriolis energy neutrality diagnostic.
 
-    Test BOTH variants:
-      Eq. 57: F = P_hv C P_vh J_v     (simple, no V)
-      Eq. 63: F = J_v^{-1} P_hv V J_h^2 C P_vh  (with V)
+    Test Eq. 57 and Eq. 63 with:
+      a) Full energy norm (including Q12 cross-terms)
+      b) Diagonal-only energy norm (Q12=0)
 
-    Use finite-difference: dKE/dt ≈ [E(v+ε·Fv) - E(v-ε·Fv)] / (2ε)
+    If diag passes and full fails → Q12 coupling is the issue.
     """
     print("\n" + "=" * 65)
     print("TEST 3: Coriolis energy neutrality")
@@ -381,7 +381,7 @@ def test_energy_neutrality():
     grids = sys_d['grids']
     metrics = sys_d['metrics']
     Pvc = sys_d['Pvc']; Pcv = sys_d['Pcv']
-    Wh = sys_d['Wh']; W1 = sys_d['W1']; W2 = sys_d['W2']
+    W1 = sys_d['W1']; W2 = sys_d['W2']
     Jh = sys_d['Jh']; J1 = sys_d['J1']; J2 = sys_d['J2']
     project_h = sys_d['project_h']
 
@@ -390,7 +390,8 @@ def test_energy_neutrality():
     f_val = 1e-4
     f_h = f_val * jnp.ones((N + 1, N + 1))
 
-    def kinetic_energy(v1, v2):
+    def kinetic_energy_full(v1, v2):
+        """Full KE with Q12 cross-terms (Eq. 64)."""
         v1c, v2c = jax.vmap(
             lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
         )(v1, v2)
@@ -399,8 +400,22 @@ def test_energy_neutrality():
             jnp.sum(v2 * J2 * v2c * W2[None])
         )
 
+    def kinetic_energy_diag(v1, v2):
+        """Diagonal-only KE (Q12=0)."""
+        Q11 = metrics['Q11_1']
+        Q22 = metrics['Q22_2']
+        return 0.5 * H0 * (
+            jnp.sum(v1**2 * J1 * Q11 * W1[None]) +
+            jnp.sum(v2**2 * J2 * Q22 * W2[None])
+        )
+
     all_ok = True
-    for label, use_V in [("Eq. 57 (no V)", False), ("Eq. 63 (with V)", True)]:
+    for label, use_V, ke_fn in [
+        ("Eq57, full KE",  False, kinetic_energy_full),
+        ("Eq57, diag KE",  False, kinetic_energy_diag),
+        ("Eq63, full KE",  True,  kinetic_energy_full),
+        ("Eq63, diag KE",  True,  kinetic_energy_diag),
+    ]:
         max_ratio = 0.0
         for seed in [42, 123, 999, 2025]:
             key = jax.random.PRNGKey(seed)
@@ -411,12 +426,11 @@ def test_energy_neutrality():
             dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
                                               Pcv, Pvc, bases_h, project_h,
                                               use_V=use_V)
-
             eps = 1e-5
-            KE_plus  = kinetic_energy(v1 + eps * dv1_c, v2 + eps * dv2_c)
-            KE_minus = kinetic_energy(v1 - eps * dv1_c, v2 - eps * dv2_c)
+            KE_plus  = ke_fn(v1 + eps * dv1_c, v2 + eps * dv2_c)
+            KE_minus = ke_fn(v1 - eps * dv1_c, v2 - eps * dv2_c)
             dKE = float((KE_plus - KE_minus) / (2 * eps))
-            KE = float(kinetic_energy(v1, v2))
+            KE = float(ke_fn(v1, v2))
             ratio = abs(dKE) / KE if KE > 0 else 0.0
             max_ratio = max(max_ratio, ratio)
 
@@ -425,7 +439,7 @@ def test_energy_neutrality():
         if max_ratio > 1e-12:
             all_ok = False
 
-    print(f"\n  {'✓ PASS' if all_ok else '✗ FAIL'}")
+    print(f"\n  {'✓ PASS' if all_ok else '✗ FAIL (see diagnostics above)'}")
     return all_ok
 
 
