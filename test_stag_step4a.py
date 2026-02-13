@@ -352,18 +352,97 @@ def test_V_edge_continuity():
     return ok
 
 
-def test_energy_neutrality():
+def test_energy_neutrality_flat():
     """
-    Test 3: Coriolis energy neutrality diagnostic.
+    Test 3a: Coriolis energy neutrality on a SINGLE FLAT PANEL.
 
-    Test Eq. 57 and Eq. 63 with:
-      a) Full energy norm (including Q12 cross-terms)
-      b) Diagonal-only energy norm (Q12=0)
+    J=1, Q11=Q22=1, Q12=0. No boundaries, no V, no metric complications.
+    Eq. 57 reduces to: F = P_hv C P_vh v
+    Energy neutrality: v^T H_v (Fv) = 0
+      follows from Pcv^T Hv = Hc Pvc and anti-symmetry of C.
 
-    If diag passes and full fails → Q12 coupling is the issue.
+    If this fails → code bug in SBP operators or Coriolis rotation.
+    If this passes → issue is cubed-sphere geometry.
     """
     print("\n" + "=" * 65)
-    print("TEST 3: Coriolis energy neutrality")
+    print("TEST 3a: Coriolis energy neutrality — FLAT PANEL")
+    print("=" * 65)
+
+    N = 12
+    dx = jnp.pi / (2 * N)
+    ops = sbp_42(N, float(dx))
+    Pcv = ops.Pcv
+    Pvc = ops.Pvc
+    Hv_diag = jnp.diag(ops.Hv)
+    Hc_diag = jnp.diag(ops.Hc)
+
+    # Quadrature weights for staggered 2D grid (flat, J=1)
+    W1 = jnp.outer(Hc_diag, Hv_diag)  # (N, N+1)
+    W2 = jnp.outer(Hv_diag, Hc_diag)  # (N+1, N)
+
+    f_val = 1.0  # Large f to amplify any leak
+    f_h = f_val * jnp.ones((N + 1, N + 1))
+
+    def flat_coriolis(v1, v2):
+        """F = P_hv C P_vh v on single panel, J=1."""
+        # Interpolate to h-points
+        w1_h = Pcv @ v1       # (N+1, N+1)
+        w2_h = v2 @ Pcv.T    # (N+1, N+1)
+        # Coriolis rotation
+        c1_h = f_h * w2_h
+        c2_h = -f_h * w1_h
+        # Interpolate back
+        dv1 = Pvc @ c1_h     # (N, N+1)
+        dv2 = c2_h @ Pvc.T   # (N+1, N)
+        return dv1, dv2
+
+    def flat_KE(v1, v2):
+        """KE = (1/2) sum(v1^2 W1 + v2^2 W2) with J=1, Q=I."""
+        return 0.5 * (jnp.sum(v1**2 * W1) + jnp.sum(v2**2 * W2))
+
+    max_ratio = 0.0
+    for seed in [42, 123, 999, 2025]:
+        key = jax.random.PRNGKey(seed)
+        k1, k2 = jax.random.split(key)
+        v1 = jax.random.normal(k1, (N, N + 1))
+        v2 = jax.random.normal(k2, (N + 1, N))
+
+        dv1, dv2 = flat_coriolis(v1, v2)
+
+        # Finite difference
+        eps = 1e-5
+        KE_plus  = flat_KE(v1 + eps * dv1, v2 + eps * dv2)
+        KE_minus = flat_KE(v1 - eps * dv1, v2 - eps * dv2)
+        dKE = float((KE_plus - KE_minus) / (2 * eps))
+        KE = float(flat_KE(v1, v2))
+        ratio = abs(dKE) / KE if KE > 0 else 0.0
+        max_ratio = max(max_ratio, ratio)
+
+    # Also test via exact inner product: v^T H Fv
+    key = jax.random.PRNGKey(42)
+    k1, k2 = jax.random.split(key)
+    v1 = jax.random.normal(k1, (N, N + 1))
+    v2 = jax.random.normal(k2, (N + 1, N))
+    dv1, dv2 = flat_coriolis(v1, v2)
+    exact_ip = float(jnp.sum(v1 * dv1 * W1) + jnp.sum(v2 * dv2 * W2))
+    KE = float(flat_KE(v1, v2))
+
+    print(f"  FD:    max|dKE/dt|/KE = {max_ratio:.2e}")
+    print(f"  Exact: v^T H Fv / KE  = {abs(exact_ip)/KE:.2e}")
+
+    ok = max_ratio < 1e-12 and abs(exact_ip)/KE < 1e-13
+    print(f"  {'✓ PASS' if ok else '✗ FAIL'}")
+    return ok
+
+
+def test_energy_neutrality():
+    """
+    Test 3b: Coriolis energy neutrality on CUBED SPHERE.
+
+    Test Eq. 57 and Eq. 62 with full and diagonal KE norms.
+    """
+    print("\n" + "=" * 65)
+    print("TEST 3b: Coriolis energy neutrality — CUBED SPHERE")
     print("=" * 65)
 
     N = 12
@@ -600,6 +679,7 @@ if __name__ == "__main__":
     results = {}
     results['basis']    = test_basis_vectors()
     results['V_cont']   = test_V_edge_continuity()
+    results['flat_cor'] = test_energy_neutrality_flat()
     results['energy_n'] = test_energy_neutrality()
     results['zero_v']   = test_zero_velocity()
     results['dt_scale'] = test_energy_dt_scaling_with_coriolis()
