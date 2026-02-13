@@ -363,10 +363,10 @@ def test_energy_neutrality():
     """
     Test 3: Coriolis is energy-neutral.
 
-    Use finite-difference on the energy functional:
-      dKE/dt ≈ [E(v + ε·Fv) - E(v - ε·Fv)] / (2ε)
+    v^T Hv Jv Q (F·v) = 0    (Eq. 76, Section 5.4)
 
-    Should be zero to machine precision if Coriolis does no work.
+    This is the KEY property: Coriolis force does no work.
+    Test with random fields and constant f.
     """
     print("\n" + "=" * 65)
     print("TEST 3: Coriolis energy neutrality")
@@ -384,44 +384,74 @@ def test_energy_neutrality():
 
     bases_h = compute_all_panel_bases(grids['xi1_h'], grids['xi2_h'])
 
+    # Constant Coriolis parameter
     f_val = 1e-4
     f_h = f_val * jnp.ones((N + 1, N + 1))
 
-    def kinetic_energy(v1, v2):
-        """KE = (H0/2) v^T Hv Jv Q v"""
-        v1c, v2c = jax.vmap(
-            lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
-        )(v1, v2)
-        return 0.5 * H0 * (
-            jnp.sum(v1 * J1 * v1c * W1[None]) +
-            jnp.sum(v2 * J2 * v2c * W2[None])
-        )
+    # Random covariant velocity field
+    key = jax.random.PRNGKey(42)
+    k1, k2 = jax.random.split(key)
+    v1 = 0.01 * jax.random.normal(k1, (6, N, N + 1))
+    v2 = 0.01 * jax.random.normal(k2, (6, N + 1, N))
 
+    # Compute Coriolis tendency
+    dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
+                                      Pcv, Pvc, bases_h, project_h)
+
+    # Energy rate: dKE/dt = H0 * v^T Hv Jv Q (Fv)
+    # Apply Q to Fv (the Coriolis tendency), then dot with v
+    dv1c_c, dv2c_c = jax.vmap(
+        lambda dv1p, dv2p: compute_contravariant(dv1p, dv2p, metrics, Pvc, Pcv)
+    )(dv1_c, dv2_c)
+
+    dKE_cori = H0 * (
+        float(jnp.sum(v1 * J1 * dv1c_c * W1[None])) +
+        float(jnp.sum(v2 * J2 * dv2c_c * W2[None]))
+    )
+
+    # KE for normalization: apply Q to v
+    v1c, v2c = jax.vmap(
+        lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
+    )(v1, v2)
+
+    KE = 0.5 * H0 * (
+        float(jnp.sum(v1 * J1 * v1c * W1[None])) +
+        float(jnp.sum(v2 * J2 * v2c * W2[None]))
+    )
+
+    print(f"  KE              = {KE:.6e}")
+    print(f"  dKE/dt (Coriolis) = {dKE_cori:.6e}")
+    if KE > 0:
+        print(f"  |dKE/dt| / KE   = {abs(dKE_cori)/KE:.6e}")
+
+    # Test with DIFFERENT random fields to make sure it's not accidental
     results = []
     for seed in [42, 123, 999, 2025]:
         key = jax.random.PRNGKey(seed)
         k1, k2 = jax.random.split(key)
-        v1 = 0.01 * jax.random.normal(k1, (6, N, N + 1))
-        v2 = 0.01 * jax.random.normal(k2, (6, N + 1, N))
+        v1_t = 0.01 * jax.random.normal(k1, (6, N, N + 1))
+        v2_t = 0.01 * jax.random.normal(k2, (6, N + 1, N))
 
-        # Coriolis tendency
-        dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
+        dv1_t, dv2_t = coriolis_tendency(v1_t, v2_t, f_h, Jh, J1, J2,
                                           Pcv, Pvc, bases_h, project_h)
+        dv1c_t, dv2c_t = jax.vmap(
+            lambda dv1p, dv2p: compute_contravariant(dv1p, dv2p, metrics, Pvc, Pcv)
+        )(dv1_t, dv2_t)
 
-        # Finite-difference: dKE/dt ≈ [E(v+ε·Fv) - E(v-ε·Fv)] / (2ε)
-        eps = 1e-5
-        KE_plus  = kinetic_energy(v1 + eps * dv1_c, v2 + eps * dv2_c)
-        KE_minus = kinetic_energy(v1 - eps * dv1_c, v2 - eps * dv2_c)
-        dKE = float((KE_plus - KE_minus) / (2 * eps))
+        dKE_t = H0 * (
+            float(jnp.sum(v1_t * J1 * dv1c_t * W1[None])) +
+            float(jnp.sum(v2_t * J2 * dv2c_t * W2[None]))
+        )
 
-        KE = float(kinetic_energy(v1, v2))
-        ratio = abs(dKE) / KE if KE > 0 else 0.0
+        v1c_t, v2c_t = jax.vmap(
+            lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
+        )(v1_t, v2_t)
+        KE_t = 0.5 * H0 * (
+            float(jnp.sum(v1_t * J1 * v1c_t * W1[None])) +
+            float(jnp.sum(v2_t * J2 * v2c_t * W2[None]))
+        )
+        ratio = abs(dKE_t) / KE_t if KE_t > 0 else 0.0
         results.append(ratio)
-
-        if seed == 42:
-            print(f"  KE              = {KE:.6e}")
-            print(f"  dKE/dt (Coriolis) = {dKE:.6e}")
-            print(f"  |dKE/dt| / KE   = {ratio:.6e}")
 
     max_ratio = max(results)
     print(f"\n  Max |dKE/dt|/KE across 4 seeds: {max_ratio:.2e}")
