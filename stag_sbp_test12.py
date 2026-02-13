@@ -902,31 +902,24 @@ def gaussian_hill_ic(N, grids, variant=1):
                Tests wave propagation through panel corners (3-panel junctions).
                Faces 0 (+Z), 1 (+Y), 4 (+X) share this vertex.
 
-    Reference face assignments (grid.py):
-      Face 0: +Z, Face 1: +Y, Face 2: -X,
-      Face 3: -Y, Face 4: +X, Face 5: -Z
-
     Returns: h (6, N+1, N+1), center (3,) Cartesian
     """
     if variant == 1:
-        center = jnp.array([0.0, 0.0, 1.0])  # face 0 center (+Z)
+        center = jnp.array([0.0, 0.0, 1.0])
     elif variant == 2:
-        center = jnp.array([1.0, 1.0, 1.0]) / jnp.sqrt(3.0)  # cube vertex
+        center = jnp.array([1.0, 1.0, 1.0]) / jnp.sqrt(3.0)
     else:
         raise ValueError(f"Unknown variant {variant}")
 
-    xi1_h = grids['xi1_h']  # (N+1, N+1)
+    xi1_h = grids['xi1_h']
     xi2_h = grids['xi2_h']
 
-    h = jnp.zeros((6, N + 1, N + 1))
-    for p in range(6):
+    def _panel_h(p):
         X, Y, Z = equiangular_to_cartesian(xi1_h, xi2_h, p)
-        # Great-circle distance
-        dot = X * center[0] + Y * center[1] + Z * center[2]
-        dot = jnp.clip(dot, -1.0, 1.0)
-        r = jnp.arccos(dot)  # in [0, pi]
-        h = h.at[p].set(jnp.exp(-16.0 * r**2))
+        dot = jnp.clip(X * center[0] + Y * center[1] + Z * center[2], -1.0, 1.0)
+        return jnp.exp(-16.0 * jnp.arccos(dot)**2)
 
+    h = jnp.stack([_panel_h(p) for p in range(6)])  # (6, N+1, N+1)
     return h, center
 
 
@@ -937,12 +930,12 @@ def test_gaussian_hill(variant=1):
     Variant 1: Panel center — waves cross edges.
     Variant 2: Cube vertex — waves cross 3-panel corners from t=0.
 
-    Runs at multiple N for self-convergence. Uses N-to-2N subsampling.
-    Reports mass conservation, energy conservation, stability.
+    Runs at multiple N for self-convergence (N-to-2N subsampling).
+    Reports mass conservation, energy conservation, stability, convergence rates.
     """
     print("\n" + "=" * 65)
     print(f"TEST: Gaussian Hill Variant {variant} (Shashkin 6.2, f=0)")
-    loc = "panel center (0,0,1)" if variant == 1 else "cube vertex (1,1,1)/√3"
+    loc = "panel center (0,0,1)" if variant == 1 else "cube vertex (1,1,1)/sqrt(3)"
     print(f"  Center: {loc}")
     print("=" * 65)
 
@@ -950,12 +943,11 @@ def test_gaussian_hill(variant=1):
     c = np.sqrt(g * H0)
     T_end = np.pi   # half circumference — waves refocus at antipodal point
 
-    # Run at multiple resolutions for convergence
-    N_list = [8, 16, 32]
+    N_list = [10, 20, 40, 80]
     CFL = 0.3
-    solutions = {}  # N -> h_final
+    solutions = {}
 
-    for N in N_list:
+    for idx, N in enumerate(N_list):
         sys_d = make_cubed_sphere_swe(N, H0, g)
         grids = sys_d['grids']
         Wh = sys_d['Wh']; Jh = sys_d['Jh']
@@ -976,18 +968,25 @@ def test_gaussian_hill(variant=1):
         nsteps = int(np.ceil(T_end / dt))
         dt = T_end / nsteps
 
-        # JIT warmup
-        if N == N_list[0]:
-            import time as _time
-            print(f"  JIT compiling (N={N})...", flush=True)
-            t0 = _time.time()
-            _h, _v1, _v2 = step_fn(h0, v1_0, v2_0, dt)
-            jax.block_until_ready(_h)
-            print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
+        # JIT warmup + timing
+        import time as _time
+        t0 = _time.time()
+        _h, _v1, _v2 = step_fn(h0, v1_0, v2_0, dt)
+        jax.block_until_ready(_h)
+        jit_time = _time.time() - t0
+        if idx == 0:
+            print(f"  JIT warmup: {jit_time:.1f}s", flush=True)
 
-        h, v1, v2 = h0, v1_0, v2_0
-        for s in range(nsteps):
+        # Time stepping with lax.fori_loop for GPU efficiency
+        def scan_step(carry, _):
+            h, v1, v2 = carry
             h, v1, v2 = step_fn(h, v1, v2, dt)
+            return (h, v1, v2), None
+
+        t0 = _time.time()
+        (h, v1, v2), _ = jax.lax.scan(scan_step, (h0, v1_0, v2_0), None, length=nsteps)
+        jax.block_until_ready(h)
+        wall_time = _time.time() - t0
 
         mass_f = compute_mass(h, Wh, Jh)
         E_f = compute_energy(h, v1, v2, Wh, sys_d['W1'], sys_d['W2'],
@@ -1000,60 +999,56 @@ def test_gaussian_hill(variant=1):
         panel_max = [float(jnp.max(jnp.abs(h[p]))) for p in range(6)]
         n_active = sum(1 for m in panel_max if m > 1e-6)
 
-        print(f"\n  N={N:3d}  steps={nsteps:5d}  dt={float(dt):.3e}")
+        print(f"\n  N={N:3d}  steps={nsteps:5d}  dt={float(dt):.3e}  wall={wall_time:.1f}s")
         print(f"    mass err: {mass_err:.2e}   energy err: {energy_err:.2e}")
         print(f"    max|h|: {max_h:.4e}   active panels: {n_active}/6")
-        print(f"    panels: {['%.2e' % m for m in panel_max]}")
 
         solutions[N] = h
 
     # Self-convergence: subsample 2N solution onto N grid
+    # With K pairs we get K errors and K-1 rates
     print(f"\n  Self-convergence (h at T={T_end:.2f}):")
-    print(f"  {'N':>5s}  {'l2 err':>10s}  {'rate':>6s}")
-    print(f"  {'-'*5}  {'-'*10}  {'-'*6}")
+    print(f"  {'pair':>8s}  {'l2 err':>10s}  {'rate':>6s}")
+    print(f"  {'-'*8}  {'-'*10}  {'-'*6}")
 
-    prev_err = None
-    prev_N = None
+    errors = []
+    pairs = []
     ok = True
 
     for i in range(len(N_list) - 1):
-        N_c = N_list[i]       # coarse
-        N_f = N_list[i + 1]   # fine (must be 2x coarse)
+        N_c = N_list[i]
+        N_f = N_list[i + 1]
         assert N_f == 2 * N_c, f"Need doubling: {N_c} -> {N_f}"
 
         h_c = solutions[N_c]
         h_f = solutions[N_f]
 
         # Subsample fine to coarse: every other point
-        h_f_sub = h_f[:, ::2, ::2]  # (6, N_c+1, N_c+1)
+        h_f_sub = h_f[:, ::2, ::2]
 
-        # L2 error (weighted by Jh·Wh on coarse grid)
+        # L2 error (weighted by Jh*Wh on coarse grid)
         sys_c = make_cubed_sphere_swe(N_c, H0, g)
         Wh_c = sys_c['Wh']; Jh_c = sys_c['Jh']
         diff = h_c - h_f_sub
         l2_err = float(jnp.sqrt(jnp.sum(diff**2 * Jh_c[None] * Wh_c[None])))
 
+        errors.append(l2_err)
+        pairs.append((N_c, N_f))
+
         rate_str = "   —"
-        if prev_err is not None:
-            rate = np.log(prev_err / l2_err) / np.log(N_c / prev_N)
+        if len(errors) >= 2:
+            rate = np.log(errors[-2] / errors[-1]) / np.log(2.0)
             rate_str = f"{rate:6.2f}"
 
-        print(f"  {N_c:5d}  {l2_err:10.2e}  {rate_str}")
-        prev_err = l2_err
-        prev_N = N_c
+        print(f"  {N_c:3d}->{N_f:<3d}  {l2_err:10.2e}  {rate_str}")
 
-        if l2_err > 1.0:  # something very wrong
+        if l2_err > 1.0:
             ok = False
 
-    # Check final solution is stable and waves spread
+    # Check final solution is stable
     h_final = solutions[N_list[-1]]
     max_final = float(jnp.max(jnp.abs(h_final)))
-    stable = max_final < 5.0  # initial max is 1.0
-
-    # Mass conservation at finest resolution
-    sys_fin = make_cubed_sphere_swe(N_list[-1], H0, g)
-    mass_check = abs(compute_mass(h_final, sys_fin['Wh'], sys_fin['Jh']) -
-                     compute_mass(solutions[N_list[-1]], sys_fin['Wh'], sys_fin['Jh']))
+    stable = max_final < 5.0
 
     passed = ok and stable
     print(f"\n  Stable: {'yes' if stable else 'NO'}")
