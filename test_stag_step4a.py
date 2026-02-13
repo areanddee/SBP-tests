@@ -166,50 +166,49 @@ def apply_V(w1_h, w2_h, bases_h, project_h):
 # ============================================================
 
 def coriolis_tendency(v1, v2, f_h, Jh, J1, J2, Pcv, Pvc,
-                      bases_h, project_h):
+                      bases_h, project_h, use_V=True):
     """
-    Compute Coriolis tendency using Eq. 63:
-      F·v = J_v^{-1} P_hv V J_h^2 C P_vh v
+    Compute Coriolis tendency using Eq. 63 (use_V=True) or Eq. 57 (use_V=False).
 
-    Args:
-        v1: (6, N, N+1) covariant velocity component 1
-        v2: (6, N+1, N) covariant velocity component 2
-        f_h: (N+1, N+1) Coriolis parameter at h-points
-        Jh: (N+1, N+1) Jacobian at h-points
-        J1: (N, N+1) Jacobian at v1-points
-        J2: (N+1, N) Jacobian at v2-points
-        Pcv: (N+1, N) interpolation matrix center→vertex
-        Pvc: (N, N+1) interpolation matrix vertex→center
-        bases_h: list of 6 dicts with basis vectors at h-points
-        project_h: scalar projection function
-
-    Returns:
-        dv1_cori: (6, N, N+1) Coriolis tendency for v1
-        dv2_cori: (6, N+1, N) Coriolis tendency for v2
+    Eq. 63: F·v = J_v^{-1} P_hv V J_h^2 C P_vh v
+    Eq. 57: F·v = P_hv C P_vh J_v v
     """
-    # Step 1: P_vh · v (interpolate covariant v to h-points)
-    w1_h = jnp.einsum('ij,pjk->pik', Pcv, v1)    # (6, N+1, N+1)
-    w2_h = jnp.einsum('pij,kj->pik', v2, Pcv)     # (6, N+1, N+1)
+    if use_V:
+        # Eq. 63: J_v^{-1} P_hv V J_h^2 C P_vh v
+        w1_h = jnp.einsum('ij,pjk->pik', Pcv, v1)
+        w2_h = jnp.einsum('pij,kj->pik', v2, Pcv)
 
-    # Step 2: C · w_h (Coriolis rotation, Eq. 58)
-    c1_h = f_h[None, :, :] * w2_h     # +f * w2
-    c2_h = -f_h[None, :, :] * w1_h    # -f * w1
+        c1_h = f_h[None, :, :] * w2_h
+        c2_h = -f_h[None, :, :] * w1_h
 
-    # Step 3: multiply by J_h^2
-    Jh2 = Jh**2
-    c1_h = c1_h * Jh2[None, :, :]
-    c2_h = c2_h * Jh2[None, :, :]
+        Jh2 = Jh**2
+        c1_h = c1_h * Jh2[None, :, :]
+        c2_h = c2_h * Jh2[None, :, :]
 
-    # Step 4: V operator (edge-continuity via Cartesian)
-    c1_h, c2_h = apply_V(c1_h, c2_h, bases_h, project_h)
+        c1_h, c2_h = apply_V(c1_h, c2_h, bases_h, project_h)
 
-    # Step 5: P_hv (interpolate back to v-points)
-    dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)   # (6, N, N+1)
-    dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)    # (6, N+1, N)
+        dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)
+        dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)
 
-    # Step 6: J_v^{-1}
-    dv1 = dv1 / J1[None, :, :]
-    dv2 = dv2 / J2[None, :, :]
+        dv1 = dv1 / J1[None, :, :]
+        dv2 = dv2 / J2[None, :, :]
+    else:
+        # Eq. 57: P_hv C P_vh J_v v  (no V, no J_h^2)
+        # 1. Multiply by J at v-points
+        w1_J = v1 * J1[None, :, :]
+        w2_J = v2 * J2[None, :, :]
+
+        # 2. Interpolate to h-points
+        w1_h = jnp.einsum('ij,pjk->pik', Pcv, w1_J)
+        w2_h = jnp.einsum('pij,kj->pik', w2_J, Pcv)
+
+        # 3. Coriolis rotation
+        c1_h = f_h[None, :, :] * w2_h
+        c2_h = -f_h[None, :, :] * w1_h
+
+        # 4. Interpolate back to v-points
+        dv1 = jnp.einsum('ij,pjk->pik', Pvc, c1_h)
+        dv2 = jnp.einsum('pij,kj->pik', c2_h, Pvc)
 
     return dv1, dv2
 
@@ -366,10 +365,11 @@ def test_energy_neutrality():
     """
     Test 3: Coriolis is energy-neutral.
 
-    Use finite-difference on the energy functional:
-      dKE/dt ≈ [E(v + ε·Fv) - E(v - ε·Fv)] / (2ε)
+    Test BOTH variants:
+      Eq. 57: F = P_hv C P_vh J_v     (simple, no V)
+      Eq. 63: F = J_v^{-1} P_hv V J_h^2 C P_vh  (with V)
 
-    Should be zero to machine precision if Coriolis does no work.
+    Use finite-difference: dKE/dt ≈ [E(v+ε·Fv) - E(v-ε·Fv)] / (2ε)
     """
     print("\n" + "=" * 65)
     print("TEST 3: Coriolis energy neutrality")
@@ -391,7 +391,6 @@ def test_energy_neutrality():
     f_h = f_val * jnp.ones((N + 1, N + 1))
 
     def kinetic_energy(v1, v2):
-        """KE = (H0/2) v^T Hv Jv Q v"""
         v1c, v2c = jax.vmap(
             lambda v1p, v2p: compute_contravariant(v1p, v2p, metrics, Pvc, Pcv)
         )(v1, v2)
@@ -400,38 +399,34 @@ def test_energy_neutrality():
             jnp.sum(v2 * J2 * v2c * W2[None])
         )
 
-    results = []
-    for seed in [42, 123, 999, 2025]:
-        key = jax.random.PRNGKey(seed)
-        k1, k2 = jax.random.split(key)
-        v1 = 0.01 * jax.random.normal(k1, (6, N, N + 1))
-        v2 = 0.01 * jax.random.normal(k2, (6, N + 1, N))
+    all_ok = True
+    for label, use_V in [("Eq. 57 (no V)", False), ("Eq. 63 (with V)", True)]:
+        max_ratio = 0.0
+        for seed in [42, 123, 999, 2025]:
+            key = jax.random.PRNGKey(seed)
+            k1, k2 = jax.random.split(key)
+            v1 = 0.01 * jax.random.normal(k1, (6, N, N + 1))
+            v2 = 0.01 * jax.random.normal(k2, (6, N + 1, N))
 
-        # Coriolis tendency
-        dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
-                                          Pcv, Pvc, bases_h, project_h)
+            dv1_c, dv2_c = coriolis_tendency(v1, v2, f_h, Jh, J1, J2,
+                                              Pcv, Pvc, bases_h, project_h,
+                                              use_V=use_V)
 
-        # Finite-difference: dKE/dt ≈ [E(v+ε·Fv) - E(v-ε·Fv)] / (2ε)
-        eps = 1e-5
-        KE_plus  = kinetic_energy(v1 + eps * dv1_c, v2 + eps * dv2_c)
-        KE_minus = kinetic_energy(v1 - eps * dv1_c, v2 - eps * dv2_c)
-        dKE = float((KE_plus - KE_minus) / (2 * eps))
+            eps = 1e-5
+            KE_plus  = kinetic_energy(v1 + eps * dv1_c, v2 + eps * dv2_c)
+            KE_minus = kinetic_energy(v1 - eps * dv1_c, v2 - eps * dv2_c)
+            dKE = float((KE_plus - KE_minus) / (2 * eps))
+            KE = float(kinetic_energy(v1, v2))
+            ratio = abs(dKE) / KE if KE > 0 else 0.0
+            max_ratio = max(max_ratio, ratio)
 
-        KE = float(kinetic_energy(v1, v2))
-        ratio = abs(dKE) / KE if KE > 0 else 0.0
-        results.append(ratio)
+        status = '✓' if max_ratio < 1e-12 else '✗'
+        print(f"  {status} {label:20s}  max|dKE/dt|/KE = {max_ratio:.2e}")
+        if max_ratio > 1e-12:
+            all_ok = False
 
-        if seed == 42:
-            print(f"  KE              = {KE:.6e}")
-            print(f"  dKE/dt (Coriolis) = {dKE:.6e}")
-            print(f"  |dKE/dt| / KE   = {ratio:.6e}")
-
-    max_ratio = max(results)
-    print(f"\n  Max |dKE/dt|/KE across 4 seeds: {max_ratio:.2e}")
-
-    ok = max_ratio < 1e-12
-    print(f"  {'✓ PASS' if ok else '✗ FAIL'}")
-    return ok
+    print(f"\n  {'✓ PASS' if all_ok else '✗ FAIL'}")
+    return all_ok
 
 
 def test_zero_velocity():
