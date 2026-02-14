@@ -943,7 +943,7 @@ def test_gaussian_hill(variant=1):
     c = np.sqrt(g * H0)
     T_end = np.pi   # half circumference — waves refocus at antipodal point
 
-    N_list = [10, 20, 40, 80]
+    N_list = [10, 20, 40, 80, 160]
     CFL = 0.3
     solutions = {}
 

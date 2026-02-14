@@ -41,7 +41,7 @@ Usage:
 import sys
 import os
 
-project_dir = '/mnt/project'
+project_dir = '.'
 if os.path.isdir(project_dir):
     sys.path.insert(0, project_dir)
 
@@ -978,7 +978,7 @@ def _plot_error_heatmaps(diff, h_fine, N_c, N_f, variant, T_end):
 
     fig.colorbar(im, ax=axes, shrink=0.6, label='h error')
     plt.tight_layout()
-    plt.savefig(f'/mnt/user-data/outputs/gauss{variant}_error_panels.png', dpi=150)
+    plt.savefig(f'./plots/gauss{variant}_error_panels.png', dpi=150)
     plt.close()
 
     # --- Figure 2: Solution heatmaps on all 6 panels ---
@@ -1004,7 +1004,7 @@ def _plot_error_heatmaps(diff, h_fine, N_c, N_f, variant, T_end):
 
     fig2.colorbar(im2, ax=axes2, shrink=0.6, label='h')
     plt.tight_layout()
-    plt.savefig(f'/mnt/user-data/outputs/gauss{variant}_solution_panels.png', dpi=150)
+    plt.savefig(f'./plots/gauss{variant}_solution_panels.png', dpi=150)
     plt.close()
 
     # --- Figure 3: Error along edges and diagonals ---
@@ -1090,7 +1090,7 @@ def _plot_error_heatmaps(diff, h_fine, N_c, N_f, variant, T_end):
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig(f'/mnt/user-data/outputs/gauss{variant}_error_structure.png', dpi=150)
+    plt.savefig(f'./plots/gauss{variant}_error_structure.png', dpi=150)
     plt.close()
 
     print(f"\n  Plots saved: gauss{variant}_error_panels.png")
