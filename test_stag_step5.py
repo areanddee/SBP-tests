@@ -303,10 +303,11 @@ def build_projection_fn(N, Jh, Hv_diag):
     def project_h(h):
         """Project h at all shared interfaces."""
         # 1. Edge averaging (12 edges)
+        h_orig = h 
         for pa, ea, pb, eb, op in EDGES:
             rev = _reverses(op)
-            bnd_a = _get_h_boundary(h[pa], ea, N)
-            bnd_b = _get_h_boundary(h[pb], eb, N)
+            bnd_a = _get_h_boundary(h_orig[pa], ea, N)
+            bnd_b = _get_h_boundary(h_orig[pb], eb, N)
             if rev:
                 bnd_b = bnd_b[::-1]
             avg = 0.5 * (bnd_a + bnd_b)
@@ -316,7 +317,7 @@ def build_projection_fn(N, Jh, Hv_diag):
 
         # 2. Corner averaging (8 corners, 3 panels each)
         for group in corner_groups:
-            vals = jnp.array([h[p, i, j] for p, i, j in group])
+            vals = jnp.array([h_orig[p, i, j] for p, i, j in group])
             avg = jnp.mean(vals)
             for p, i, j in group:
                 h = h.at[p, i, j].set(avg)
