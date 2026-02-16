@@ -6,29 +6,30 @@ and Cartesian velocity (Vx, Vy, Vz).
 
 Key equations:
   V = v^1 * a_1 + v^2 * a_2       (contravariant to Cartesian)
-  v_i = V · a_i                     (Cartesian to covariant)
+  v_i = V . a_i                     (Cartesian to covariant)
   v^i = g^{ij} * v_j               (covariant to contravariant, index raising)
   v_i = g_{ij} * v^j               (contravariant to covariant, index lowering)
 
-where a_i = ∂r/∂ξ^i are covariant basis vectors (tangent to coordinate lines)
-and g_{ij} = a_i · a_j is the covariant metric tensor.
+where a_i = dr/dxi^i are covariant basis vectors (tangent to coordinate lines)
+and g_{ij} = a_i . a_j is the covariant metric tensor.
 
 NAMING CONVENTION:
-  contravariant = v^i (upper index) — components in the direction of basis vectors
-  covariant     = v_i (lower index) — projections onto basis vectors
+  contravariant = v^i (upper index) -- components in the direction of basis vectors
+  covariant     = v_i (lower index) -- projections onto basis vectors
   
   The SWE momentum equation evolves COVARIANT v_i (Shashkin Eq. 50).
   The mass flux uses CONTRAVARIANT v^i via u = J * v^contra.
   compute_contravariant() in the SWE code takes covariant v_i and returns v^i.
 
-HISTORY:
-  The original velocity_transforms.py had the functions misnamed:
-    old covariant_to_cartesian  →  now contravariant_to_cartesian
-    old cartesian_to_covariant  →  now cartesian_to_contravariant
-  Both are preserved with correct names. A new cartesian_to_covariant is added
-  that returns true covariant components v_i = V · a_i (without raising).
+CRITICAL: The original velocity_transforms.py had BOTH functions misnamed:
+  old "covariant_to_cartesian"  did V = u*a_1 + v*a_2  (actually contravariant->Cartesian)
+  old "cartesian_to_covariant"  returned g^{ij}(V.a_j)  (actually Cartesian->contravariant)
   
-  Backward-compatible aliases are provided at the bottom.
+This file has FOUR correctly named functions:
+  contravariant_to_cartesian:  V = v^i * a_i            (no metric needed)
+  cartesian_to_contravariant:  v^i = g^{ij} (V . a_j)   (needs metric inverse)
+  covariant_to_cartesian:      raise first, then expand   (needs metric inverse)
+  cartesian_to_covariant:      v_i = V . a_i             (no metric needed)
 """
 
 import jax
@@ -42,7 +43,7 @@ def get_covariant_basis(xi1, xi2, face_id):
     """
     Compute covariant basis vectors a_1, a_2 at point (xi1, xi2) on face.
     
-    a_i = ∂r/∂ξ^i where r = (X, Y, Z) is position on sphere.
+    a_i = dr/dxi^i where r = (X, Y, Z) is position on sphere.
     
     Returns:
         a1: (a1_x, a1_y, a1_z) - tangent vector in xi1 direction
@@ -91,8 +92,26 @@ def get_covariant_basis(xi1, xi2, face_id):
     return a1, a2
 
 
+def _compute_metric_and_inverse(a1, a2):
+    """
+    Compute covariant metric g_{ij} and its inverse g^{ij}.
+    
+    Returns: g11, g12, g22, ginv11, ginv12, ginv22
+    """
+    g11 = a1[0]**2 + a1[1]**2 + a1[2]**2
+    g12 = a1[0]*a2[0] + a1[1]*a2[1] + a1[2]*a2[2]
+    g22 = a2[0]**2 + a2[1]**2 + a2[2]**2
+    
+    det_g = g11 * g22 - g12**2
+    ginv11 = g22 / det_g
+    ginv12 = -g12 / det_g
+    ginv22 = g11 / det_g
+    
+    return g11, g12, g22, ginv11, ginv12, ginv22
+
+
 # ============================================================
-# Contravariant ↔ Cartesian  (v^i ↔ V)
+# Contravariant <-> Cartesian  (v^i <-> V)
 # ============================================================
 
 def contravariant_to_cartesian(v1, v2, xi1, xi2, face_id):
@@ -102,7 +121,7 @@ def contravariant_to_cartesian(v1, v2, xi1, xi2, face_id):
     V = v^1 * a_1 + v^2 * a_2
     
     This is the standard expansion of a vector in terms of contravariant
-    components and covariant basis vectors.
+    components and covariant basis vectors. No metric needed.
     """
     a1, a2 = get_covariant_basis(xi1, xi2, face_id)
     
@@ -117,29 +136,20 @@ def cartesian_to_contravariant(Vx, Vy, Vz, xi1, xi2, face_id):
     """
     Convert Cartesian velocity (Vx, Vy, Vz) to CONTRAVARIANT (v^1, v^2).
     
-    v^i = g^{ij} * (V · a_j)
+    v^i = g^{ij} * (V . a_j)
     
     First projects V onto covariant basis to get covariant components v_i,
     then raises the index with the inverse metric g^{ij}.
     """
     a1, a2 = get_covariant_basis(xi1, xi2, face_id)
     
-    # Covariant components: v_i = V · a_i
+    # Covariant components: v_i = V . a_i
     V_dot_a1 = Vx * a1[0] + Vy * a1[1] + Vz * a1[2]
     V_dot_a2 = Vx * a2[0] + Vy * a2[1] + Vz * a2[2]
     
-    # Covariant metric g_{ij} = a_i · a_j
-    g11 = a1[0]**2 + a1[1]**2 + a1[2]**2
-    g12 = a1[0]*a2[0] + a1[1]*a2[1] + a1[2]*a2[2]
-    g22 = a2[0]**2 + a2[1]**2 + a2[2]**2
-    
-    # Inverse metric g^{ij}
-    det_g = g11 * g22 - g12**2
-    ginv11 = g22 / det_g
-    ginv12 = -g12 / det_g
-    ginv22 = g11 / det_g
-    
     # Raise index: v^i = g^{ij} v_j
+    _, _, _, ginv11, ginv12, ginv22 = _compute_metric_and_inverse(a1, a2)
+    
     v1 = ginv11 * V_dot_a1 + ginv12 * V_dot_a2
     v2 = ginv12 * V_dot_a1 + ginv22 * V_dot_a2
     
@@ -147,17 +157,18 @@ def cartesian_to_contravariant(Vx, Vy, Vz, xi1, xi2, face_id):
 
 
 # ============================================================
-# Covariant ↔ Cartesian  (v_i ↔ V)
+# Covariant <-> Cartesian  (v_i <-> V)
 # ============================================================
 
 def cartesian_to_covariant(Vx, Vy, Vz, xi1, xi2, face_id):
     """
     Convert Cartesian velocity (Vx, Vy, Vz) to COVARIANT (v_1, v_2).
     
-    v_i = V · a_i
+    v_i = V . a_i
     
     These are the natural projections onto the covariant basis.
     The SWE momentum equation (Shashkin Eq. 50) evolves these components.
+    NO metric inverse needed -- this is just a dot product.
     """
     a1, a2 = get_covariant_basis(xi1, xi2, face_id)
     
@@ -171,30 +182,24 @@ def covariant_to_cartesian(v1, v2, xi1, xi2, face_id):
     """
     Convert COVARIANT velocity (v_1, v_2) to Cartesian (Vx, Vy, Vz).
     
-    V = v_1 * a^1 + v_2 * a^2   where a^i are CONTRAVARIANT basis vectors.
+    Two steps:
+      1. Raise index: v^i = g^{ij} v_j
+      2. Expand: V = v^i * a_i
     
-    Since a^i = g^{ij} a_j, this is equivalent to:
-    V = g^{ij} v_j * a_i
+    This is equivalent to V = v_i * a^i where a^i = g^{ij} a_j are the
+    contravariant basis vectors.
     
-    So: first raise the index to get v^i, then expand as v^i * a_i.
+    REQUIRES metric inverse (unlike cartesian_to_covariant which is just a dot product).
     """
     a1, a2 = get_covariant_basis(xi1, xi2, face_id)
     
-    # Metric
-    g11 = a1[0]**2 + a1[1]**2 + a1[2]**2
-    g12 = a1[0]*a2[0] + a1[1]*a2[1] + a1[2]*a2[2]
-    g22 = a2[0]**2 + a2[1]**2 + a2[2]**2
+    # Step 1: Raise index  v^i = g^{ij} v_j
+    _, _, _, ginv11, ginv12, ginv22 = _compute_metric_and_inverse(a1, a2)
     
-    det_g = g11 * g22 - g12**2
-    ginv11 = g22 / det_g
-    ginv12 = -g12 / det_g
-    ginv22 = g11 / det_g
-    
-    # Raise: v^i = g^{ij} v_j
     v1_up = ginv11 * v1 + ginv12 * v2
     v2_up = ginv12 * v1 + ginv22 * v2
     
-    # Expand: V = v^i a_i
+    # Step 2: Expand  V = v^i a_i
     Vx = v1_up * a1[0] + v2_up * a2[0]
     Vy = v1_up * a1[1] + v2_up * a2[1]
     Vz = v1_up * a1[2] + v2_up * a2[2]
@@ -203,26 +208,11 @@ def covariant_to_cartesian(v1, v2, xi1, xi2, face_id):
 
 
 # ============================================================
-# Backward-compatible aliases (old misnamed functions)
-# ============================================================
-# The old code used "covariant" to mean "contravariant" throughout.
-# These aliases keep existing code working without changes.
-
-# Old: covariant_to_cartesian(u, v, ...) — actually took contravariant
-#   → Now: contravariant_to_cartesian (the alias IS the same function)
-# Already handled: covariant_to_cartesian IS contravariant_to_cartesian
-# because the old code passed v^i and expanded as v^i * a_i.
-# We keep the old name pointing to the contravariant version for compat.
-_old_covariant_to_cartesian = contravariant_to_cartesian
-_old_cartesian_to_covariant = cartesian_to_contravariant
-
-
-# ============================================================
 # Unit Tests
 # ============================================================
 
 def test_basis_vectors_orthogonal_to_normal():
-    """Basis vectors a_1, a_2 should be tangent to the sphere (r · a_i = 0)."""
+    """Basis vectors a_1, a_2 should be tangent to the sphere (r . a_i = 0)."""
     print("Test: Basis vectors orthogonal to normal...")
     
     max_err = 0.0
@@ -238,13 +228,13 @@ def test_basis_vectors_orthogonal_to_normal():
                 err = max(abs(float(r_dot_a1)), abs(float(r_dot_a2)))
                 max_err = max(max_err, err)
     
-    print(f"  Max |r · a| = {max_err:.2e}")
+    print(f"  Max |r . a| = {max_err:.2e}")
     assert max_err < 1e-10, f"Basis not tangent to sphere"
-    print("  ✓ PASSED")
+    print("  PASSED")
 
 
 def test_contravariant_roundtrip():
-    """(v^1,v^2) → (Vx,Vy,Vz) → (v^1,v^2) should round-trip."""
+    """(v^1,v^2) -> (Vx,Vy,Vz) -> (v^1,v^2) should round-trip."""
     print("\nTest: Contravariant roundtrip...")
     
     max_err = 0.0
@@ -261,11 +251,11 @@ def test_contravariant_roundtrip():
     
     print(f"  Max roundtrip error = {max_err:.2e}")
     assert max_err < 1e-10
-    print("  ✓ PASSED")
+    print("  PASSED")
 
 
 def test_covariant_roundtrip():
-    """(v_1,v_2) → (Vx,Vy,Vz) → (v_1,v_2) should round-trip."""
+    """(v_1,v_2) -> (Vx,Vy,Vz) -> (v_1,v_2) should round-trip."""
     print("\nTest: Covariant roundtrip...")
     
     max_err = 0.0
@@ -282,7 +272,7 @@ def test_covariant_roundtrip():
     
     print(f"  Max roundtrip error = {max_err:.2e}")
     assert max_err < 1e-10
-    print("  ✓ PASSED")
+    print("  PASSED")
 
 
 def test_covariant_vs_contravariant_consistency():
@@ -302,13 +292,10 @@ def test_covariant_vs_contravariant_consistency():
                 
                 # Raise covariant to get contravariant via metric
                 a1, a2 = get_covariant_basis(xi1, xi2, face_id)
-                g11 = a1[0]**2 + a1[1]**2 + a1[2]**2
-                g12 = a1[0]*a2[0] + a1[1]*a2[1] + a1[2]*a2[2]
-                g22 = a2[0]**2 + a2[1]**2 + a2[2]**2
-                det_g = g11 * g22 - g12**2
+                _, _, _, ginv11, ginv12, ginv22 = _compute_metric_and_inverse(a1, a2)
                 
-                v1_raised = (g22 * v1_cov - g12 * v2_cov) / det_g
-                v2_raised = (-g12 * v1_cov + g11 * v2_cov) / det_g
+                v1_raised = ginv11 * v1_cov + ginv12 * v2_cov
+                v2_raised = ginv12 * v1_cov + ginv22 * v2_cov
                 
                 err = max(abs(float(v1_raised - v1_con)),
                          abs(float(v2_raised - v2_con)))
@@ -316,14 +303,14 @@ def test_covariant_vs_contravariant_consistency():
     
     print(f"  Max |v^i_raised - v^i_direct| = {max_err:.2e}")
     assert max_err < 1e-10
-    print("  ✓ PASSED")
+    print("  PASSED")
 
 
 def test_covariant_continuity_at_edges():
     """
     CRITICAL TEST: At the SAME physical location on a shared edge,
     the Cartesian velocity must be identical whether computed from
-    covariant or contravariant components on either panel.
+    covariant components on either panel.
     """
     print("\nTest: Covariant continuity at edges...")
     
@@ -332,10 +319,10 @@ def test_covariant_continuity_at_edges():
     
     max_err = 0.0
     
-    # Test P0-E ↔ P4-N (T operation, axis-swap)
+    # Test P0-E <-> P4-N (T operation, axis-swap)
     for xi2_a in test_xi_values:
         xi1_a = pi4
-        xi1_b = xi2_a  # T: column→row
+        xi1_b = xi2_a  # T: column->row
         xi2_b = pi4
         
         # Verify same position
@@ -351,7 +338,7 @@ def test_covariant_continuity_at_edges():
         v1_a, v2_a = cartesian_to_covariant(Vx, Vy, Vz, xi1_a, xi2_a, 0)
         v1_b, v2_b = cartesian_to_covariant(Vx, Vy, Vz, xi1_b, xi2_b, 4)
         
-        # Reconstruct Cartesian from each
+        # Reconstruct Cartesian from each panel's covariant
         Vx_a, Vy_a, Vz_a = covariant_to_cartesian(v1_a, v2_a, xi1_a, xi2_a, 0)
         Vx_b, Vy_b, Vz_b = covariant_to_cartesian(v1_b, v2_b, xi1_b, xi2_b, 4)
         
@@ -360,7 +347,37 @@ def test_covariant_continuity_at_edges():
     
     print(f"  Max Cartesian velocity error at axis-swap edge = {max_err:.2e}")
     assert max_err < 1e-10
-    print("  ✓ PASSED")
+    print("  PASSED")
+
+
+def test_old_vs_new_naming():
+    """
+    Verify that the OLD function names would give WRONG results for covariant input.
+    
+    The old code did: V = v_i * a_i (treating covariant as contravariant).
+    The new code does: v^i = g^{ij} v_j, then V = v^i * a_i.
+    These differ when g != identity (i.e., everywhere on the cubed sphere).
+    """
+    print("\nTest: Old vs new naming difference...")
+    
+    xi1, xi2, face_id = 0.3, 0.4, 0
+    v1_cov, v2_cov = 1.5, -0.7  # These are COVARIANT components
+    
+    # CORRECT: new covariant_to_cartesian (raises index first)
+    Vx_correct, Vy_correct, Vz_correct = covariant_to_cartesian(
+        v1_cov, v2_cov, xi1, xi2, face_id)
+    
+    # WRONG: what old code did (no index raising, treated as contravariant)
+    Vx_wrong, Vy_wrong, Vz_wrong = contravariant_to_cartesian(
+        v1_cov, v2_cov, xi1, xi2, face_id)
+    
+    diff = float(jnp.sqrt((Vx_correct - Vx_wrong)**2 + 
+                           (Vy_correct - Vy_wrong)**2 + 
+                           (Vz_correct - Vz_wrong)**2))
+    
+    print(f"  |V_correct - V_wrong| = {diff:.2e}")
+    assert diff > 0.01, "Should differ significantly away from panel center"
+    print(f"  PASSED (they differ by {diff:.2e}, confirming fix matters)")
 
 
 def run_all_tests():
@@ -374,10 +391,11 @@ def run_all_tests():
     test_covariant_roundtrip()
     test_covariant_vs_contravariant_consistency()
     test_covariant_continuity_at_edges()
+    test_old_vs_new_naming()
     
     print()
     print("="*60)
-    print("✓ ALL VELOCITY TRANSFORM TESTS PASSED")
+    print("ALL VELOCITY TRANSFORM TESTS PASSED")
     print("="*60)
 
 
