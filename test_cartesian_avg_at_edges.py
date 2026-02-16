@@ -624,8 +624,8 @@ def test_averaged_covariant_roundtrip():
 if __name__ == '__main__':
     test_averaged_cartesian_accuracy()
     test_convergence()
-    test_flux_mismatch_fixed()
-    test_new_flux_convergence()
+    test_consensus_flux_accuracy()
+    test_consensus_flux_convergence()
     test_averaged_covariant_roundtrip()
 
     print("=" * 70)
