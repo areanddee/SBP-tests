@@ -311,36 +311,41 @@ def test_convergence():
 
 
 # ============================================================
-# TEST 3: Fixed flux mismatch — the payoff test
+# TEST 3: Consensus flux matches analytic — the payoff test
 # ============================================================
 
-def test_flux_mismatch_fixed():
+def test_consensus_flux_accuracy():
     """
-    Rerun the smoking gun test from test_sat_flux_continuity.py, but now
-    using the Cartesian-averaged covariant velocity to compute mass flux.
+    THE key test for the SAT refactoring.
 
-    OLD approach: extrapolate mass flux u=J*v^contra from each panel,
-                  average directly → O(1) mismatch on 8/12 edges.
+    The refactored SAT will compute a "consensus" normal mass flux from
+    the Cartesian-averaged velocity:
+        flux_consensus = J * Q^{normal,j} * v_j_avg   (in local coords)
 
-    NEW approach: Cartesian-average the covariant velocity, then compute
-                  mass flux locally from the averaged velocity.
+    For an exact analytic field, v_avg ≈ v_exact (with O(h^p) error from
+    extrapolation/interpolation), so flux_consensus ≈ flux_exact.
 
-    The "mismatch" here measures how well the two panels agree on the
-    normal mass flux when both use the Cartesian-averaged velocity.
+    This test verifies that the consensus flux is close to the analytic
+    flux on EACH panel INDIVIDUALLY — not by comparing flux across panels
+    (which involves incompatible coordinate representations).
+
+    The old SAT averaged INCOMPATIBLE fluxes across panels. The new SAT
+    will use a consensus flux that is always in the local panel's frame,
+    so this per-panel accuracy is what matters.
     """
     print("=" * 70)
-    print("TEST 3: Flux mismatch — OLD method vs NEW Cartesian averaging")
+    print("TEST 3: Consensus flux accuracy (per panel, all edges)")
     print("=" * 70)
     print()
+    print("  flux_consensus = J * Q^{n,j} * v_j_avg  (Cartesian-averaged velocity)")
+    print("  flux_exact     = J * Q^{n,j} * v_j_exact (analytic at boundary)")
+    print("  Error should be O(h^p) on ALL edges, including AXIS-SWAP.\n")
+
+    from test_stag_step4 import compute_metric
 
     N = 20
     dx = (np.pi / 2) / N
     ops = sbp_42(N, float(dx))
-    pi4 = np.pi / 4
-    xi_v = jnp.linspace(-pi4, pi4, N + 1)
-
-    # Metric at h-grid boundary points
-    from test_stag_step4 import compute_metric
 
     fields = [
         (solid_body_rotation_z, "SolidBody-Z"),
@@ -350,9 +355,9 @@ def test_flux_mismatch_fixed():
 
     for field_fn, field_name in fields:
         print(f"  --- {field_name} ---")
-        print(f"  {'Edge':>20s}  {'op':>3s}  {'OLD mismatch':>14s}  "
-              f"{'NEW mismatch':>14s}  {'improvement':>12s}  {'type':>10s}")
-        print("  " + "-" * 90)
+        print(f"  {'Edge':>20s}  {'op':>3s}  {'|flux_cons - flux_exact| A':>26s}  "
+              f"{'B':>12s}  {'type':>10s}")
+        print("  " + "-" * 82)
 
         v1_all, v2_all = {}, {}
         for p in range(6):
@@ -361,96 +366,69 @@ def test_flux_mismatch_fixed():
         for pa, ea, pb, eb, op in EDGES:
             rev = _reverses(op)
 
-            # ---- OLD method: extrapolate mass flux directly ----
-            # Compute contravariant velocity and mass flux on staggered grid
-            # For simplicity, compute analytic mass flux at boundary
-            # (This isolates the averaging issue from compute_contravariant)
-            xi1_a, xi2_a = edge_bnd_coords(ea, N)
-            xi1_b, xi2_b = edge_bnd_coords(eb, N)
-
-            # Analytic covariant at boundary
-            X_a, Y_a, Z_a = equiangular_to_cartesian(xi1_a, xi2_a, pa)
-            Vx_a, Vy_a, Vz_a = field_fn(X_a, Y_a, Z_a)
-            v1_cov_a, v2_cov_a = cartesian_to_covariant(Vx_a, Vy_a, Vz_a,
-                                                          xi1_a, xi2_a, pa)
-            J_a, Q11_a, Q12_a, Q22_a = compute_metric(xi1_a, xi2_a)
-
-            X_b, Y_b, Z_b = equiangular_to_cartesian(xi1_b, xi2_b, pb)
-            Vx_b, Vy_b, Vz_b = field_fn(X_b, Y_b, Z_b)
-            v1_cov_b, v2_cov_b = cartesian_to_covariant(Vx_b, Vy_b, Vz_b,
-                                                          xi1_b, xi2_b, pb)
-            J_b, Q11_b, Q12_b, Q22_b = compute_metric(xi1_b, xi2_b)
-
-            # Normal mass flux from each panel (using correct covariant velocity)
-            if ea in ('E', 'W'):
-                flux_a = J_a * (Q11_a * v1_cov_a + Q12_a * v2_cov_a)
-            else:
-                flux_a = J_a * (Q12_a * v1_cov_a + Q22_a * v2_cov_a)
-
-            if eb in ('E', 'W'):
-                flux_b = J_b * (Q11_b * v1_cov_b + Q12_b * v2_cov_b)
-            else:
-                flux_b = J_b * (Q12_b * v1_cov_b + Q22_b * v2_cov_b)
-
-            # OLD mismatch: flux_a + ss * flux_b_aligned
-            sign_a = +1.0 if ea in ('E', 'N') else -1.0
-            sign_b = +1.0 if eb in ('E', 'N') else -1.0
-            ss = sign_a * sign_b
-
-            flux_b_aligned = flux_b[::-1] if rev else flux_b
-            old_mismatch = float(jnp.max(jnp.abs(flux_a + ss * flux_b_aligned)))
-
-            # ---- NEW method: Cartesian-averaged velocity ----
+            # Cartesian-averaged covariant velocity
             v1_avg_a, v2_avg_a, v1_avg_b, v2_avg_b, _, _, _ = \
                 cartesian_average_at_edge(
                     v1_all[pa], v2_all[pa], v1_all[pb], v2_all[pb],
                     pa, ea, pb, eb, op, ops, N)
 
-            # Compute normal mass flux from averaged covariant velocity
+            # Analytic covariant at boundary — panel A
+            xi1_a, xi2_a = edge_bnd_coords(ea, N)
+            X_a, Y_a, Z_a = equiangular_to_cartesian(xi1_a, xi2_a, pa)
+            Vx_a, Vy_a, Vz_a = field_fn(X_a, Y_a, Z_a)
+            v1_ex_a, v2_ex_a = cartesian_to_covariant(Vx_a, Vy_a, Vz_a,
+                                                        xi1_a, xi2_a, pa)
+            J_a, Q11_a, Q12_a, Q22_a = compute_metric(xi1_a, xi2_a)
+
+            # Analytic covariant at boundary — panel B
+            xi1_b, xi2_b = edge_bnd_coords(eb, N)
+            X_b, Y_b, Z_b = equiangular_to_cartesian(xi1_b, xi2_b, pb)
+            Vx_b, Vy_b, Vz_b = field_fn(X_b, Y_b, Z_b)
+            v1_ex_b, v2_ex_b = cartesian_to_covariant(Vx_b, Vy_b, Vz_b,
+                                                        xi1_b, xi2_b, pb)
+            J_b, Q11_b, Q12_b, Q22_b = compute_metric(xi1_b, xi2_b)
+
+            # Normal flux: consensus vs exact — panel A
             if ea in ('E', 'W'):
-                flux_avg_a = J_a * (Q11_a * v1_avg_a + Q12_a * v2_avg_a)
+                flux_cons_a = J_a * (Q11_a * v1_avg_a + Q12_a * v2_avg_a)
+                flux_exact_a = J_a * (Q11_a * v1_ex_a + Q12_a * v2_ex_a)
             else:
-                flux_avg_a = J_a * (Q12_a * v1_avg_a + Q22_a * v2_avg_a)
+                flux_cons_a = J_a * (Q12_a * v1_avg_a + Q22_a * v2_avg_a)
+                flux_exact_a = J_a * (Q12_a * v1_ex_a + Q22_a * v2_ex_a)
 
+            err_a = float(jnp.max(jnp.abs(flux_cons_a - flux_exact_a)))
+
+            # Normal flux: consensus vs exact — panel B
             if eb in ('E', 'W'):
-                flux_avg_b = J_b * (Q11_b * v1_avg_b + Q12_b * v2_avg_b)
+                flux_cons_b = J_b * (Q11_b * v1_avg_b + Q12_b * v2_avg_b)
+                flux_exact_b = J_b * (Q11_b * v1_ex_b + Q12_b * v2_ex_b)
             else:
-                flux_avg_b = J_b * (Q12_b * v1_avg_b + Q22_b * v2_avg_b)
+                flux_cons_b = J_b * (Q12_b * v1_avg_b + Q22_b * v2_avg_b)
+                flux_exact_b = J_b * (Q12_b * v1_ex_b + Q22_b * v2_ex_b)
 
-            # NEW mismatch: should be much smaller
-            flux_avg_b_aligned = flux_avg_b[::-1] if rev else flux_avg_b
-            new_mismatch = float(jnp.max(jnp.abs(flux_avg_a + ss * flux_avg_b_aligned)))
-
-            # Improvement factor
-            if new_mismatch > 1e-15:
-                improvement = f"{old_mismatch / new_mismatch:10.1f}x"
-            else:
-                improvement = "   exact"
+            err_b = float(jnp.max(jnp.abs(flux_cons_b - flux_exact_b)))
 
             is_swap = op in ('T', 'TR')
             etype = "AXIS-SWAP" if is_swap else "aligned"
-
-            print(f"  P{pa}-{ea}<->P{pb}-{eb}  {op:>3s}  "
-                  f"{old_mismatch:14.6e}  {new_mismatch:14.6e}  "
-                  f"{improvement:>12s}  {etype:>10s}")
+            print(f"  P{pa}-{ea}<->P{pb}-{eb}  {op:>3s}  {err_a:26.6e}  "
+                  f"{err_b:12.6e}  {etype:>10s}")
 
         print()
 
-    print("  OLD: O(1) mismatch on edges with coordinate mismatch")
-    print("  NEW: O(h^p) mismatch from extrapolation/interpolation error only")
     print("  ✓ TEST 3 COMPLETE\n")
 
 
 # ============================================================
-# TEST 4: Convergence of NEW flux mismatch
+# TEST 4: Convergence of consensus flux accuracy
 # ============================================================
 
-def test_new_flux_convergence():
+def test_consensus_flux_convergence():
     """
-    Verify that the NEW flux mismatch converges with refinement on ALL edges.
+    Verify that the consensus flux error converges with refinement on ALL edges.
+    This directly predicts the SAT penalty magnitude: small penalty = small error.
     """
     print("=" * 70)
-    print("TEST 4: Convergence of NEW flux mismatch (Diagonal field)")
+    print("TEST 4: Convergence of consensus flux error (Diagonal field)")
     print("=" * 70)
     print()
 
@@ -459,49 +437,60 @@ def test_new_flux_convergence():
     Ns = [10, 20, 40, 80]
     field_fn = diagonal_flow
 
-    all_results = {i: [] for i in range(len(EDGES))}
+    # Per-edge, per-panel results
+    all_results_a = {i: [] for i in range(len(EDGES))}
+    all_results_b = {i: [] for i in range(len(EDGES))}
 
     for N in Ns:
         dx = (np.pi / 2) / N
         ops = sbp_42(N, float(dx))
-        pi4 = np.pi / 4
-        xi_v = jnp.linspace(-pi4, pi4, N + 1)
 
         v1_all, v2_all = {}, {}
         for p in range(6):
             v1_all[p], v2_all[p] = make_covariant_field(N, p, field_fn)
 
         for idx, (pa, ea, pb, eb, op) in enumerate(EDGES):
-            rev = _reverses(op)
-            xi1_a, xi2_a = edge_bnd_coords(ea, N)
-            xi1_b, xi2_b = edge_bnd_coords(eb, N)
-
-            J_a, Q11_a, Q12_a, Q22_a = compute_metric(xi1_a, xi2_a)
-            J_b, Q11_b, Q12_b, Q22_b = compute_metric(xi1_b, xi2_b)
-
             v1_avg_a, v2_avg_a, v1_avg_b, v2_avg_b, _, _, _ = \
                 cartesian_average_at_edge(
                     v1_all[pa], v2_all[pa], v1_all[pb], v2_all[pb],
                     pa, ea, pb, eb, op, ops, N)
 
+            # Analytic on panel A
+            xi1_a, xi2_a = edge_bnd_coords(ea, N)
+            X_a, Y_a, Z_a = equiangular_to_cartesian(xi1_a, xi2_a, pa)
+            Vx_a, Vy_a, Vz_a = field_fn(X_a, Y_a, Z_a)
+            v1_ex_a, v2_ex_a = cartesian_to_covariant(Vx_a, Vy_a, Vz_a,
+                                                        xi1_a, xi2_a, pa)
+            J_a, Q11_a, Q12_a, Q22_a = compute_metric(xi1_a, xi2_a)
+
             if ea in ('E', 'W'):
-                flux_avg_a = J_a * (Q11_a * v1_avg_a + Q12_a * v2_avg_a)
+                flux_cons = J_a * (Q11_a * v1_avg_a + Q12_a * v2_avg_a)
+                flux_exact = J_a * (Q11_a * v1_ex_a + Q12_a * v2_ex_a)
             else:
-                flux_avg_a = J_a * (Q12_a * v1_avg_a + Q22_a * v2_avg_a)
+                flux_cons = J_a * (Q12_a * v1_avg_a + Q22_a * v2_avg_a)
+                flux_exact = J_a * (Q12_a * v1_ex_a + Q22_a * v2_ex_a)
+
+            all_results_a[idx].append(float(jnp.max(jnp.abs(flux_cons - flux_exact))))
+
+            # Analytic on panel B
+            xi1_b, xi2_b = edge_bnd_coords(eb, N)
+            X_b, Y_b, Z_b = equiangular_to_cartesian(xi1_b, xi2_b, pb)
+            Vx_b, Vy_b, Vz_b = field_fn(X_b, Y_b, Z_b)
+            v1_ex_b, v2_ex_b = cartesian_to_covariant(Vx_b, Vy_b, Vz_b,
+                                                        xi1_b, xi2_b, pb)
+            J_b, Q11_b, Q12_b, Q22_b = compute_metric(xi1_b, xi2_b)
 
             if eb in ('E', 'W'):
-                flux_avg_b = J_b * (Q11_b * v1_avg_b + Q12_b * v2_avg_b)
+                flux_cons_b = J_b * (Q11_b * v1_avg_b + Q12_b * v2_avg_b)
+                flux_exact_b = J_b * (Q11_b * v1_ex_b + Q12_b * v2_ex_b)
             else:
-                flux_avg_b = J_b * (Q12_b * v1_avg_b + Q22_b * v2_avg_b)
+                flux_cons_b = J_b * (Q12_b * v1_avg_b + Q22_b * v2_avg_b)
+                flux_exact_b = J_b * (Q12_b * v1_ex_b + Q22_b * v2_ex_b)
 
-            sign_a = +1.0 if ea in ('E', 'N') else -1.0
-            sign_b = +1.0 if eb in ('E', 'N') else -1.0
-            ss = sign_a * sign_b
+            all_results_b[idx].append(float(jnp.max(jnp.abs(flux_cons_b - flux_exact_b))))
 
-            flux_avg_b_aligned = flux_avg_b[::-1] if rev else flux_avg_b
-            mismatch = float(jnp.max(jnp.abs(flux_avg_a + ss * flux_avg_b_aligned)))
-            all_results[idx].append(mismatch)
-
+    # Print panel A convergence
+    print("  Panel A side:")
     print(f"  {'Edge':>20s}  {'op':>3s}", end='')
     for N in Ns:
         print(f"  {'N='+str(N):>12s}", end='')
@@ -513,7 +502,35 @@ def test_new_flux_convergence():
     for idx, (pa, ea, pb, eb, op) in enumerate(EDGES):
         label = f"P{pa}-{ea}<->P{pb}-{eb}"
         is_swap = op in ('T', 'TR')
-        errs = all_results[idx]
+        errs = all_results_a[idx]
+
+        print(f"  {label:>20s}  {op:>3s}", end='')
+        for e in errs:
+            print(f"  {e:12.4e}", end='')
+        for i in range(len(Ns) - 1):
+            if errs[i] > 1e-14 and errs[i+1] > 1e-14:
+                rate = np.log2(errs[i] / errs[i+1])
+                print(f"  {rate:6.2f}", end='')
+            else:
+                print(f"    ---", end='')
+        if is_swap:
+            print("  SWAP", end='')
+        print()
+
+    # Print panel B convergence
+    print(f"\n  Panel B side:")
+    print(f"  {'Edge':>20s}  {'op':>3s}", end='')
+    for N in Ns:
+        print(f"  {'N='+str(N):>12s}", end='')
+    for _ in range(len(Ns) - 1):
+        print(f"  {'rate':>6s}", end='')
+    print()
+    print("  " + "-" * (28 + 14*len(Ns) + 8*(len(Ns)-1)))
+
+    for idx, (pa, ea, pb, eb, op) in enumerate(EDGES):
+        label = f"P{pa}-{ea}<->P{pb}-{eb}"
+        is_swap = op in ('T', 'TR')
+        errs = all_results_b[idx]
 
         print(f"  {label:>20s}  {op:>3s}", end='')
         for e in errs:
@@ -529,6 +546,7 @@ def test_new_flux_convergence():
         print()
 
     print()
+    print("  All edges should converge at O(h^2) or better on BOTH sides.")
     print("  ✓ TEST 4 COMPLETE\n")
 
 
