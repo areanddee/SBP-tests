@@ -981,10 +981,10 @@ def test_convergence(variant=1):
     print(f"        Center at {label}")
     print("=" * 65)
 
-    Ns = [10, 20, 40, 80, 160]
+    Ns = [24, 48, 96, 192]
     H0 = 1.0; g = 1.0; c = np.sqrt(g * H0)
     CFL = 0.05
-    T_end = 2.5   # fixed physical time (days)
+    T_end = 25.   # fixed physical time (days)
 
     print(f"  T = {T_end}, CFL = {CFL}, H0 = {H0}, g = {g}")
     print(f"  N values: {Ns}")
