@@ -963,7 +963,7 @@ def test_convergence(variant=1):
     """
     Richardson self-convergence test.
 
-    Runs at N = 10, 20, 40, 80, 160. Compares each coarser solution against
+    Runs at N = 24, 48, 96, 192. Compares each coarser solution against
     the finest (N=32) subsampled to the coarse grid.
 
     variant 1: Gaussian centered at panel center (0,0) on panel 0
@@ -984,7 +984,7 @@ def test_convergence(variant=1):
     Ns = [10, 20, 40, 80, 160]
     H0 = 1.0; g = 1.0; c = np.sqrt(g * H0)
     CFL = 0.05
-    T_end = 1.0   # fixed physical time
+    T_end = 2.5   # fixed physical time (days)
 
     print(f"  T = {T_end}, CFL = {CFL}, H0 = {H0}, g = {g}")
     print(f"  N values: {Ns}")
