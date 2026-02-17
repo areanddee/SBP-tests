@@ -963,8 +963,8 @@ def test_convergence(variant=1):
     """
     Richardson self-convergence test.
 
-    Runs at N = 24, 48, 96, 192. Compares each coarser solution against
-    the finest (N=32) subsampled to the coarse grid.
+    Runs at N = 24, 48, 96, 192, 384 Compares each coarser solution against
+    the finest (N=24) subsampled to the coarse grid.
 
     variant 1: Gaussian centered at panel center (0,0) on panel 0
     variant 2: Gaussian centered at cube vertex (pi/4,pi/4) on panel 0
@@ -981,7 +981,7 @@ def test_convergence(variant=1):
     print(f"        Center at {label}")
     print("=" * 65)
 
-    Ns = [24, 48, 96, 192]
+    Ns = [24, 48, 96, 192, 384]
     H0 = 1.0; g = 1.0; c = np.sqrt(g * H0)
     CFL = 0.05
     T_end = 25.   # fixed physical time (days)
@@ -1017,7 +1017,9 @@ def test_convergence(variant=1):
         sys_d = make_cubed_sphere_swe(N, H0, g)
         grids = sys_d['grids']
         dx = sys_d['dx']
-        dt = CFL * dx / c
+        dt = 1./(N*3)       # per Table 1, section 6.1, Shashkin, et al. 2025 
+        #dt = CFL * dx / c
+        CFL = c*dt/dx
         nsteps = int(np.ceil(T_end / dt))
         dt = T_end / nsteps   # hit T_end exactly
 
@@ -1025,7 +1027,7 @@ def test_convergence(variant=1):
         mass0 = compute_mass(h, sys_d['Wh'], sys_d['Jh'])
         step_fn = make_rk4_step(sys_d['rhs'])
 
-        print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, steps = {nsteps}",
+        print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, CFL = {CFL:.4e}, steps = {nsteps}",
               end='', flush=True)
 
         t0 = _time.time()
