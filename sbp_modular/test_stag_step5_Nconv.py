@@ -60,14 +60,6 @@ from sat_operators import build_cartesian_sat_fn
 # ============================================================
 from connectivity import EDGES
 
-# 8 corners: each shared by 3 panels
-# Format: [(panel, i, j), ...] for each corner
-CORNERS = [
-    [(0, 0, 0), (2, 0, 0), (3, 0, 0)],       # corner where F0-SW, F2-SW(?), F3-SW(?) meet -- we need to figure these out from the edges
-]
-# We'll compute corners from edge connectivity below
-
-
 def _reverses(op):
     """Does this operation reverse the index order?"""
     return op in ('R', 'TR')
