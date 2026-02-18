@@ -36,29 +36,10 @@ import jax.numpy as jnp
 
 from velocity_transforms import cartesian_to_covariant, covariant_to_cartesian
 
-
 # ============================================================
-# Edge connectivity table
+# Edge connectivity (single source of truth: connectivity.py)
 # ============================================================
-
-# Format: (panel_a, edge_a, panel_b, edge_b, op)
-# op: 'N'=identity, 'R'=reverse, 'T'=identity(axis swap), 'TR'=reverse(axis swap)
-# For index mapping: 'N','T' -> k<->k; 'R','TR' -> k<->(N-k)
-EDGES = [
-    (0, 'N', 1, 'N', 'R'),
-    (0, 'E', 4, 'N', 'T'),
-    (0, 'W', 2, 'N', 'TR'),
-    (0, 'S', 3, 'N', 'N'),
-    (1, 'E', 2, 'W', 'N'),
-    (1, 'S', 5, 'N', 'N'),
-    (1, 'W', 4, 'E', 'N'),
-    (2, 'E', 3, 'W', 'N'),
-    (2, 'S', 5, 'E', 'TR'),
-    (3, 'E', 4, 'W', 'N'),
-    (3, 'S', 5, 'S', 'R'),
-    (4, 'S', 5, 'W', 'T'),
-]
-
+from connectivity import EDGES
 
 def _reverses(op):
     """Does this operation reverse the index order?"""
