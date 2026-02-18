@@ -4,35 +4,25 @@ SAT Operators for Cubed-Sphere Staggered SBP
 Provides Simultaneous Approximation Term (SAT) corrections for coupling
 panels on the cubed sphere. Two implementations:
 
-  1. build_scalar_sat_fn()     â€” the original flux-averaging SAT (BROKEN
-     on axis-swap edges due to coordinate mismatch)
+  1. build_scalar_sat_fn()     -- the original flux-averaging SAT
+     Conserves mass algebraically but averages incompatible flux components
+     on axis-swap edges (u1 vs u2), leading to O(1) convergence penalty.
 
-  2. build_cartesian_sat_fn()  â€” the new Cartesian-averaged velocity SAT
-     that works correctly on ALL 12 edges
+  2. build_cartesian_sat_fn()  -- Cartesian-averaged velocity SAT
+     Averages velocity in Cartesian coordinates (coordinate-free) to get
+     a physically meaningful consensus flux F*, then FORCES algebraic
+     cancellation by defining B's consensus as -ss * F*_aligned.
 
-The key insight: at axis-swap edges, the normal mass flux from panel A
-is u1 = JÂ·v^1 while from panel B it is u2 = JÂ·v^2. These represent
-DIFFERENT physical quantities in incompatible coordinate systems, so
-averaging them directly produces O(1) error that GROWS with refinement.
+     This gives BOTH:
+       - Mass conservation by construction (algebraic telescoping)
+       - Correct physics on axis-swap edges (Cartesian averaging)
 
-The fix: average the VELOCITY VECTOR in Cartesian coordinates (coordinate-
-free), then convert back to each panel's covariant frame to compute the
-consensus mass flux.
-
-Pipeline per edge (pa, ea) <-> (pb, eb):
-  1. Extrapolate covariant (v_1, v_2) to h-grid boundary from both panels
-  2. Convert each panel's boundary covariant velocity to Cartesian
-  3. Align indices (reverse for R, TR edges)
-  4. Average in Cartesian: V_avg = 0.5 * (V_A + V_B)
-  5. Convert V_avg back to covariant in each panel's frame
-  6. Compute consensus mass flux: J Â· Q^{n,j} Â· v_j_avg
-  7. SAT penalty = -sign Â· Hv_inv Â· (flux_own - flux_consensus)
-
-Energy conservation proof:
-  Both panels compute flux_consensus from the SAME Cartesian V_avg,
-  so sign_aÂ·flux_cons_a + sign_bÂ·flux_cons_b = 0 (same physical flux,
-  opposite outward normals). Combined with h-projection (h_a = h_b at
-  boundary), energy contributions telescope.
+Conservation proof for build_cartesian_sat_fn:
+  At each edge, the mass rate contribution from SAT is proportional to:
+    sign_a * F*_a + sign_b * F*_b
+  We define F*_b = -ss * F*_a_aligned = -(sign_a*sign_b) * F*_a_aligned.
+  At corresponding physical points:
+    sign_a * F* + sign_b * (-(sign_a*sign_b) * F*) = sign_a*F* - sign_a*F* = 0  QED
 
 Dependencies:
   - sbp_staggered_1d.sbp_42 (SBP operators)
@@ -48,9 +38,26 @@ from velocity_transforms import cartesian_to_covariant, covariant_to_cartesian
 
 
 # ============================================================
-# Edge connectivity (single source of truth: connectivity.py)
+# Edge connectivity table
 # ============================================================
-from connectivity import EDGES
+
+# Format: (panel_a, edge_a, panel_b, edge_b, op)
+# op: 'N'=identity, 'R'=reverse, 'T'=identity(axis swap), 'TR'=reverse(axis swap)
+# For index mapping: 'N','T' -> k<->k; 'R','TR' -> k<->(N-k)
+EDGES = [
+    (0, 'N', 1, 'N', 'R'),
+    (0, 'E', 4, 'N', 'T'),
+    (0, 'W', 2, 'N', 'TR'),
+    (0, 'S', 3, 'N', 'N'),
+    (1, 'E', 2, 'W', 'N'),
+    (1, 'S', 5, 'N', 'N'),
+    (1, 'W', 4, 'E', 'N'),
+    (2, 'E', 3, 'W', 'N'),
+    (2, 'S', 5, 'E', 'TR'),
+    (3, 'E', 4, 'W', 'N'),
+    (3, 'S', 5, 'S', 'R'),
+    (4, 'S', 5, 'W', 'T'),
+]
 
 
 def _reverses(op):
@@ -154,6 +161,13 @@ def cartesian_average_at_edge(v1_a, v2_a, v1_b, v2_b,
     """
     Compute Cartesian-averaged covariant velocity at a shared edge.
 
+    Pipeline:
+      1. Extrapolate covariant to h-grid boundary from both panels
+      2. Convert to Cartesian using covariant_to_cartesian (with index raising)
+      3. Align indices (reverse for R, TR edges)
+      4. Average in Cartesian: V_avg = 0.5 * (V_A + V_B)
+      5. Convert back to covariant in panel A's frame only
+
     Args:
         v1_a, v2_a: (N,N+1), (N+1,N) covariant velocity on panel A
         v1_b, v2_b: (N,N+1), (N+1,N) covariant velocity on panel B
@@ -165,8 +179,7 @@ def cartesian_average_at_edge(v1_a, v2_a, v1_b, v2_b,
 
     Returns:
         v1_avg_a, v2_avg_a: (N+1,) averaged covariant in A's frame
-        v1_avg_b, v2_avg_b: (N+1,) averaged covariant in B's frame
-        Vx_avg, Vy_avg, Vz_avg: (N+1,) averaged Cartesian velocity
+        Vx_avg, Vy_avg, Vz_avg: (N+1,) averaged Cartesian velocity (A's ordering)
     """
     rev = _reverses(op)
 
@@ -192,20 +205,11 @@ def cartesian_average_at_edge(v1_a, v2_a, v1_b, v2_b,
     Vy_avg = 0.5 * (Vy_A + Vy_B)
     Vz_avg = 0.5 * (Vz_A + Vz_B)
 
-    # Step 5: Convert back to covariant in each panel's frame
+    # Step 5: Convert back to covariant in panel A's frame ONLY
     v1_avg_a, v2_avg_a = cartesian_to_covariant(Vx_avg, Vy_avg, Vz_avg,
                                                   xi1_a, xi2_a, pa)
 
-    # For panel B, un-reverse to B's index order before converting
-    if rev:
-        Vx_avg_b, Vy_avg_b, Vz_avg_b = Vx_avg[::-1], Vy_avg[::-1], Vz_avg[::-1]
-    else:
-        Vx_avg_b, Vy_avg_b, Vz_avg_b = Vx_avg, Vy_avg, Vz_avg
-
-    v1_avg_b, v2_avg_b = cartesian_to_covariant(Vx_avg_b, Vy_avg_b, Vz_avg_b,
-                                                  xi1_b, xi2_b, pb)
-
-    return v1_avg_a, v2_avg_a, v1_avg_b, v2_avg_b, Vx_avg, Vy_avg, Vz_avg
+    return v1_avg_a, v2_avg_a, Vx_avg, Vy_avg, Vz_avg
 
 
 # ============================================================
@@ -243,12 +247,14 @@ def build_scalar_sat_fn(N, ops):
     """
     Build the ORIGINAL scalar flux-averaging SAT.
 
-    WARNING: This produces O(1) error on 8 of 12 edges (axis-swap and
-    certain aligned edges where cross-term Q12*v2 is nonzero). It is
-    preserved only for regression testing.
+    Conserves mass algebraically but averages incompatible flux components
+    on axis-swap edges, leading to O(1) convergence penalty on 8 of 12 edges.
 
     SAT formula:
-      sat_a = -sign_a * 0.5 * Hv_inv * (flux_own + ss * flux_nbr_aligned)
+      sat_a = -sign_a * 0.5 * Hv_inv * (flux_a + ss * flux_b_aligned)
+      sat_b = -sign_b * 0.5 * Hv_inv * (flux_b + ss * flux_a_aligned)
+
+    Conservation: sign_a*F*_a + sign_b*F*_b = 0 by algebraic identity.
 
     Args:
         N: grid resolution
@@ -316,23 +322,40 @@ def build_scalar_sat_fn(N, ops):
 
 
 # ============================================================
-# New Cartesian-averaged SAT builder
+# New Cartesian-averaged SAT builder (CONSERVATIVE)
 # ============================================================
 
 def build_cartesian_sat_fn(N, ops, compute_metric_fn):
     """
-    Build SAT correction function using Cartesian-averaged velocity.
+    Build SAT correction using Cartesian-averaged velocity with
+    ALGEBRAIC mass conservation.
 
-    This correctly handles ALL 12 edges including axis-swap by averaging
-    the velocity vector in Cartesian coordinates before computing the
-    consensus mass flux in each panel's local frame.
+    This combines the best of both approaches:
+      - Cartesian velocity averaging for physically correct F* on ALL edges
+      - Algebraic cancellation structure for exact mass conservation
 
-    SAT formula:
-      sat_a = -sign_a * Hv_inv[bnd] * (flux_own_a - flux_consensus_a)
+    The key insight: computing F* independently on each panel (the old
+    v2 approach) gives sign_a*F*_a + sign_b*F*_b != 0 at 8 of 12 edges
+    because the off-diagonal metric Q12 has different signs in different
+    panel frames. Fix: compute F* ONCE in panel A's frame, then DEFINE
+    B's consensus as -ss * F*_aligned.
 
-    where:
-      flux_own = extrapolated mass flux from the Dcv operator
-      flux_consensus = J * Q^{n,j} * v_j_avg  (from Cartesian-averaged velocity)
+    Pipeline per edge:
+      1. Average velocity in Cartesian (coordinate-free)
+      2. Convert averaged V back to covariant in panel A's frame
+      3. F* = J_a * Q^{n,j}_a * v_j_avg_a  (consensus flux in A's frame)
+      4. Panel A: sat_a = -sign_a * Hv_inv * (flux_own_a - F*)
+      5. Panel B: sat_b = -sign_b * Hv_inv * (flux_own_b + ss * F*_aligned)
+
+    Conservation proof:
+      Mass rate from SAT at this edge:
+        sign_a * F* + sign_b * (-ss * F*) = sign_a * F* - sign_a * F* = 0  QED
+
+    Note: The factor of 1/2 from the old SAT is NOT needed here because
+    the old SAT uses F*_old = 0.5*(flux_a - ss*flux_b) which already has
+    the 1/2 baked in. Here, F* is the full consensus flux, and the SAT
+    penalty (flux_own - F*) directly replaces the extrapolated flux with
+    the consensus flux.
 
     Args:
         N: grid resolution
@@ -380,6 +403,9 @@ def build_cartesian_sat_fn(N, ops, compute_metric_fn):
         """
         Add Cartesian-averaged SAT corrections at all 12 edges.
 
+        Mass conservation is ALGEBRAIC: F* computed once in panel A's frame,
+        panel B's consensus forced to -ss * F*_aligned.
+
         Args:
             div: (6, N+1, N+1) divergence field to correct
             u1:  (6, N, N+1) mass flux in xi1 direction
@@ -393,29 +419,29 @@ def build_cartesian_sat_fn(N, ops, compute_metric_fn):
             idx_b = _hv_inv_index(eb, N)
             sign_a = _boundary_sign(ea)
             sign_b = _boundary_sign(eb)
+            ss = sign_a * sign_b
 
-            # Extrapolated mass flux from Dcv operator (unchanged)
+            # --- Extrapolated mass flux from Dcv operator ---
             flux_own_a = extrapolate_flux(u1, u2, pa, ea)
             flux_own_b = extrapolate_flux(u1, u2, pb, eb)
 
-            # Cartesian-averaged covariant velocity at boundary
-            v1_avg_a, v2_avg_a, v1_avg_b, v2_avg_b, _, _, _ = \
+            # --- Cartesian-averaged covariant velocity in A's frame ---
+            v1_avg_a, v2_avg_a, _, _, _ = \
                 cartesian_average_at_edge(
                     v1[pa], v2[pa], v1[pb], v2[pb],
                     pa, ea, pb, eb, op, ops, N)
 
-            # Consensus mass flux from averaged velocity
+            # --- F* = consensus flux in panel A's frame ---
             J_a, Q11_a, Q12_a, Q22_a = edge_metrics[ea]
-            J_b, Q11_b, Q12_b, Q22_b = edge_metrics[eb]
+            F_star = _consensus_flux(v1_avg_a, v2_avg_a, ea,
+                                     J_a, Q11_a, Q12_a, Q22_a)
 
-            flux_cons_a = _consensus_flux(v1_avg_a, v2_avg_a, ea,
-                                          J_a, Q11_a, Q12_a, Q22_a)
-            flux_cons_b = _consensus_flux(v1_avg_b, v2_avg_b, eb,
-                                          J_b, Q11_b, Q12_b, Q22_b)
+            # --- SAT for panel A ---
+            sat_a = -sign_a * Hv_inv[idx_a] * (flux_own_a - F_star)
 
-            # SAT penalty: replace extrapolated flux with consensus
-            sat_a = -sign_a * Hv_inv[idx_a] * (flux_own_a - flux_cons_a)
-            sat_b = -sign_b * Hv_inv[idx_b] * (flux_own_b - flux_cons_b)
+            # --- SAT for panel B (FORCED algebraic cancellation) ---
+            F_star_aligned = F_star[::-1] if rev else F_star
+            sat_b = -sign_b * Hv_inv[idx_b] * (flux_own_b + ss * F_star_aligned)
 
             div = _apply_sat(div, pa, ea, sat_a)
             div = _apply_sat(div, pb, eb, sat_b)
