@@ -1,34 +1,34 @@
 """
-test_stag_step4.py â€” 6-Panel Cubed Sphere with Metrics (f=0)
+test_stag_step4.py Ã¢â‚¬â€ 6-Panel Cubed Sphere with Metrics (f=0)
 ============================================================
 
 GOAL: Full cubed-sphere SWE with metric terms, 12-edge connectivity,
 and SAT-Projection. No Coriolis (f=0) to isolate geometric effects.
 
 PHYSICS (Shashkin Eq. 49, f=0):
-    dv1/dt = -g âˆ‚h/âˆ‚x1
-    dv2/dt = -g âˆ‚h/âˆ‚x2
-    dh/dt  = -(H/J)(âˆ‚(JvÂ¹)/âˆ‚x1 + âˆ‚(JvÂ²)/âˆ‚x2)
+    dv1/dt = -g Ã¢Ë†â€šh/Ã¢Ë†â€šx1
+    dv2/dt = -g Ã¢Ë†â€šh/Ã¢Ë†â€šx2
+    dh/dt  = -(H/J)(Ã¢Ë†â€š(JvÃ‚Â¹)/Ã¢Ë†â€šx1 + Ã¢Ë†â€š(JvÃ‚Â²)/Ã¢Ë†â€šx2)
 
-  where (vÂ¹,vÂ²) = Q(v1,v2) are contravariant velocities.
+  where (vÃ‚Â¹,vÃ‚Â²) = Q(v1,v2) are contravariant velocities.
 
-GRID: Equiangular gnomonic, xi1,xi2 âˆˆ [-Ï€/4, Ï€/4]
+GRID: Equiangular gnomonic, xi1,xi2 Ã¢Ë†Ë† [-Ãâ‚¬/4, Ãâ‚¬/4]
   h:  (6, N+1, N+1) at vertices (xi_v, xi_v)
   v1: (6, N, N+1)   at x-faces  (xi_c, xi_v)
   v2: (6, N+1, N)   at y-faces  (xi_v, xi_c)
 
 METRIC (same for all panels):
-  J   = 1/(rÂ³ cosÂ²Î¾1 cosÂ²Î¾2),  rÂ² = 1+tanÂ²Î¾1+tanÂ²Î¾2
-  QÂ¹Â¹ = râ´cosÂ²Î¾1cosÂ²Î¾2(1 - tanÂ²Î¾1/rÂ²)
-  QÂ¹Â² = -râ´cosÂ²Î¾1cosÂ²Î¾2(tanÎ¾1Â·tanÎ¾2/rÂ²)
-  QÂ²Â² = râ´cosÂ²Î¾1cosÂ²Î¾2(1 - tanÂ²Î¾2/rÂ²)
+  J   = 1/(rÃ‚Â³ cosÃ‚Â²ÃŽÂ¾1 cosÃ‚Â²ÃŽÂ¾2),  rÃ‚Â² = 1+tanÃ‚Â²ÃŽÂ¾1+tanÃ‚Â²ÃŽÂ¾2
+  QÃ‚Â¹Ã‚Â¹ = rÃ¢ÂÂ´cosÃ‚Â²ÃŽÂ¾1cosÃ‚Â²ÃŽÂ¾2(1 - tanÃ‚Â²ÃŽÂ¾1/rÃ‚Â²)
+  QÃ‚Â¹Ã‚Â² = -rÃ¢ÂÂ´cosÃ‚Â²ÃŽÂ¾1cosÃ‚Â²ÃŽÂ¾2(tanÃŽÂ¾1Ã‚Â·tanÃŽÂ¾2/rÃ‚Â²)
+  QÃ‚Â²Ã‚Â² = rÃ¢ÂÂ´cosÃ‚Â²ÃŽÂ¾1cosÃ‚Â²ÃŽÂ¾2(1 - tanÃ‚Â²ÃŽÂ¾2/rÃ‚Â²)
 
 CONNECTIVITY: 12 edges from halo_exchange schedule
   h-projection: average at shared vertices (Eq. 51-52)
   SAT: average mass flux at interfaces (Eq. 53-55)
 
 TARGETS:
-  - Steady state: uniform h, zero v â†’ zero tendency
+  - Steady state: uniform h, zero v Ã¢â€ â€™ zero tendency
   - Mass conservation: machine precision
   - Energy: spatial exact (dt^p scaling)
   - Stable gravity wave propagation
@@ -56,25 +56,9 @@ from grid import equiangular_to_cartesian
 from sat_operators import build_cartesian_sat_fn
 
 # ============================================================
-# Connectivity: 12 cubed-sphere edges
+# Connectivity (single source of truth: connectivity.py)
 # ============================================================
-# Format: (panel_a, edge_a, panel_b, edge_b, op)
-# op: 'N'=identity, 'R'=reverse, 'T'=identity(axis swap), 'TR'=reverse(axis swap)
-# For index mapping: 'N','T' â†’ kâ†”k; 'R','TR' â†’ kâ†”(N-k)
-EDGES = [
-    (0, 'N', 1, 'N', 'R'),
-    (0, 'E', 4, 'N', 'T'),
-    (0, 'W', 2, 'N', 'TR'),
-    (0, 'S', 3, 'N', 'N'),
-    (1, 'E', 2, 'W', 'N'),
-    (1, 'S', 5, 'N', 'N'),
-    (1, 'W', 4, 'E', 'N'),
-    (2, 'E', 3, 'W', 'N'),
-    (2, 'S', 5, 'E', 'TR'),
-    (3, 'E', 4, 'W', 'N'),
-    (3, 'S', 5, 'S', 'R'),
-    (4, 'S', 5, 'W', 'T'),
-]
+from connectivity import EDGES
 
 # 8 corners: each shared by 3 panels
 # Format: [(panel, i, j), ...] for each corner
@@ -120,17 +104,17 @@ def _edge_is_x1_boundary(edge):
 
 def _flux_vel_component(edge):
     """Which velocity component provides normal flux?"""
-    # E/W: normal is x1 â†’ flux from v1 (u1 = J1Â·v1_contra)
-    # N/S: normal is x2 â†’ flux from v2 (u2 = J2Â·v2_contra)
+    # E/W: normal is x1 Ã¢â€ â€™ flux from v1 (u1 = J1Ã‚Â·v1_contra)
+    # N/S: normal is x2 Ã¢â€ â€™ flux from v2 (u2 = J2Ã‚Â·v2_contra)
     return 'v1' if edge in ('E', 'W') else 'v2'
 
 
 def _extrap_vector(edge):
     """Which extrapolation vector (l or r) for this edge?"""
-    # E (x1=max) â†’ r along x1
-    # W (x1=min) â†’ l along x1
-    # N (x2=max) â†’ r along x2
-    # S (x2=min) â†’ l along x2
+    # E (x1=max) Ã¢â€ â€™ r along x1
+    # W (x1=min) Ã¢â€ â€™ l along x1
+    # N (x2=max) Ã¢â€ â€™ r along x2
+    # S (x2=min) Ã¢â€ â€™ l along x2
     return 'r' if edge in ('E', 'N') else 'l'
 
 
@@ -168,7 +152,7 @@ def compute_metric(xi1, xi2):
 
 def make_staggered_grids(N):
     """
-    Create coordinate arrays for staggered grid on [-Ï€/4, Ï€/4]Â².
+    Create coordinate arrays for staggered grid on [-Ãâ‚¬/4, Ãâ‚¬/4]Ã‚Â².
 
     Returns: xi_v (N+1,), xi_c (N,), dx,
              and 2D coordinate arrays for h, v1, v2 grids.
@@ -209,9 +193,9 @@ def make_all_metrics(grids):
 
 def compute_contravariant(v1, v2, metrics, Pvc, Pcv):
     """
-    Compute contravariant velocities vÂ¹, vÂ² from covariant v1, v2.
+    Compute contravariant velocities vÃ‚Â¹, vÃ‚Â² from covariant v1, v2.
 
-    Eq. 56 â€” works for single panel (N,N+1) or batched (6,N,N+1).
+    Eq. 56 Ã¢â‚¬â€ works for single panel (N,N+1) or batched (6,N,N+1).
     """
     Q11_1 = metrics['Q11_1']
     Q12_h = metrics['Q12_h']
@@ -222,13 +206,13 @@ def compute_contravariant(v1, v2, metrics, Pvc, Pcv):
 
     JQ12 = Jh * Q12_h  # (N+1, N+1)
 
-    # vÂ¹: off-diagonal term
+    # vÃ‚Â¹: off-diagonal term
     v2_at_h = v2 @ Pcv.T          # P2h
     cross_at_h = JQ12 * v2_at_h
     cross_at_v1 = Pvc @ cross_at_h  # Ph1
     v1_contra = Q11_1 * v1 + cross_at_v1 / J1
 
-    # vÂ²: off-diagonal term
+    # vÃ‚Â²: off-diagonal term
     v1_at_h = Pcv @ v1             # P1h
     cross_at_h2 = JQ12 * v1_at_h
     cross_at_v2 = cross_at_h2 @ Pvc.T  # Ph2
@@ -247,16 +231,16 @@ def build_projection_fn(N, Jh, Hv_diag):
 
     For equiangular cubed sphere, J is the same on both sides of a shared
     vertex, so the weighted average (Eq. 51) simplifies to:
-      (AhÂ·h)_m = (JhÂ·HvÂ·h_m + JhÂ·HvÂ·h_m*) / (2Â·JhÂ·Hv)
+      (AhÃ‚Â·h)_m = (JhÃ‚Â·HvÃ‚Â·h_m + JhÃ‚Â·HvÃ‚Â·h_m*) / (2Ã‚Â·JhÃ‚Â·Hv)
                = (h_m + h_m*) / 2
 
     Corner points (Eq. 52): average of 3 panels.
     """
     # Precompute corner assignments from edge connectivity
-    # A corner is where two edges meet. Each panel has 4 corners at (i,j) = {0,N}Ã—{0,N}.
+    # A corner is where two edges meet. Each panel has 4 corners at (i,j) = {0,N}Ãƒâ€”{0,N}.
     # Build: for each (panel, i, j) corner, find all panels sharing that corner.
 
-    corner_map = {}  # (panel, i, j) â†’ set of (panel, i, j) sharing this physical point
+    corner_map = {}  # (panel, i, j) Ã¢â€ â€™ set of (panel, i, j) sharing this physical point
 
     # First, identify which panel corners are connected via edges
     for pa, ea, pb, eb, op in EDGES:
@@ -277,7 +261,7 @@ def build_projection_fn(N, Jh, Hv_diag):
             corner_map[key_a].add(key_b)
             corner_map[key_b].add(key_a)
 
-    # Transitively close: if Aâ†”B and Bâ†”C, then Aâ†”Bâ†”C
+    # Transitively close: if AÃ¢â€ â€B and BÃ¢â€ â€C, then AÃ¢â€ â€BÃ¢â€ â€C
     changed = True
     while changed:
         changed = False
@@ -355,11 +339,11 @@ def build_sat_fn(N, ops, metrics):
       South (j=0): -1 (min boundary)
 
     For mass conservation, boundary contributions from adjacent panels
-    must cancel: sign_a * flux_a + sign_b * flux_b â†’ 0 with SAT.
+    must cancel: sign_a * flux_a + sign_b * flux_b Ã¢â€ â€™ 0 with SAT.
 
-    For max-min connections (Eâ†”W): signs are +1,-1 â†’ naturally oppose
-    For max-max (Nâ†”N, Eâ†”N): signs are +1,+1 â†’ SAT must negate neighbor
-    For min-min (Sâ†”S, Sâ†”W): signs are -1,-1 â†’ SAT must negate neighbor
+    For max-min connections (EÃ¢â€ â€W): signs are +1,-1 Ã¢â€ â€™ naturally oppose
+    For max-max (NÃ¢â€ â€N, EÃ¢â€ â€N): signs are +1,+1 Ã¢â€ â€™ SAT must negate neighbor
+    For min-min (SÃ¢â€ â€S, SÃ¢â€ â€W): signs are -1,-1 Ã¢â€ â€™ SAT must negate neighbor
     """
     l = ops.l   # (N,) left extrapolation
     r = ops.r   # (N,) right extrapolation
@@ -446,7 +430,7 @@ def make_cubed_sphere_swe(N, H0, g):
     Equations (Shashkin Eq. 50 with F=0):
       dv1/dt = -g Dvc @ (Ah h)                    (gradient x1)
       dv2/dt = -g (Ah h) @ Dvc.T                  (gradient x2)
-      dh/dt  = -H0 Ah Jhâ»Â¹ [Dcv@(J1vÂ¹) + (J2vÂ²)@Dcv.T + SAT]  (continuity)
+      dh/dt  = -H0 Ah JhÃ¢ÂÂ»Ã‚Â¹ [Dcv@(J1vÃ‚Â¹) + (J2vÃ‚Â²)@Dcv.T + SAT]  (continuity)
     """
     grids = make_staggered_grids(N)
     metrics = make_all_metrics(grids)
@@ -501,7 +485,7 @@ def make_cubed_sphere_swe(N, H0, g):
         # Add SAT corrections at all 12 edges
         div = add_sat(div, u1_all, u2_all, v1, v2)
 
-        # Continuity: dh/dt = -H0 Â· project(Jhâ»Â¹ Â· div)
+        # Continuity: dh/dt = -H0 Ã‚Â· project(JhÃ¢ÂÂ»Ã‚Â¹ Ã‚Â· div)
         dh_dt = project_h(-H0 * Jh_inv * div)
 
         return dh_dt, dv1_dt, dv2_dt
@@ -550,16 +534,16 @@ def make_rk4_step(rhs_fn):
 # ============================================================
 
 def compute_mass(h, Wh, Jh):
-    """Global mass = sum_panels âˆ« hÂ·J dA = sum h Â· Jh Â· Wh"""
+    """Global mass = sum_panels Ã¢Ë†Â« hÃ‚Â·J dA = sum h Ã‚Â· Jh Ã‚Â· Wh"""
     return float(jnp.sum(h * Jh[None, :, :] * Wh[None, :, :]))
 
 
 def compute_energy(h, v1, v2, Wh, W1, W2, Jh, J1, J2, g, H0,
                    metrics, Pvc, Pcv):
     """
-    Total energy E = (g/2)âˆ«hÂ²J dA + (H0/2)âˆ«(v1Â·vÂ¹ + v2Â·vÂ²)J dA
+    Total energy E = (g/2)Ã¢Ë†Â«hÃ‚Â²J dA + (H0/2)Ã¢Ë†Â«(v1Ã‚Â·vÃ‚Â¹ + v2Ã‚Â·vÃ‚Â²)J dA
     """
-    # PE: (g/2) sum_p hÂ²Â·JhÂ·Wh
+    # PE: (g/2) sum_p hÃ‚Â²Ã‚Â·JhÃ‚Â·Wh
     PE = 0.5 * g * float(jnp.sum(h**2 * Jh[None, :, :] * Wh[None, :, :]))
 
     # KE: vmap contravariant velocity
@@ -576,7 +560,7 @@ def compute_energy(h, v1, v2, Wh, W1, W2, Jh, J1, J2, g, H0,
 
 
 def compute_energy_simple(h, v1, v2, Wh, W1, W2, Jh, J1, J2, g, H0):
-    """Simplified energy using diagonal metric only (Q12â‰ˆ0 near center)."""
+    """Simplified energy using diagonal metric only (Q12Ã¢â€°Ë†0 near center)."""
     PE = 0.5 * g * float(jnp.sum(h**2 * Jh[None, :, :] * Wh[None, :, :]))
     # Approximate KE with diagonal metric only
     KE = 0.5 * H0 * (float(jnp.sum(v1**2 * J1[None, :, :] * W1[None, :, :])) +
@@ -593,8 +577,8 @@ def test_metrics():
     Verify metric terms:
     1. J > 0 everywhere
     2. Q symmetric: Q12 = Q21
-    3. Q positive definite: Q11Â·Q22 - Q12Â² > 0
-    4. det(Q) = 1/JÂ²
+    3. Q positive definite: Q11Ã‚Â·Q22 - Q12Ã‚Â² > 0
+    4. det(Q) = 1/JÃ‚Â²
     5. Same metric at shared vertices across panels
     """
     print("\n" + "=" * 65)
@@ -610,30 +594,30 @@ def test_metrics():
     J1 = metrics['J1']
     J2 = metrics['J2']
     j_min = min(float(jnp.min(Jh)), float(jnp.min(J1)), float(jnp.min(J2)))
-    print(f"  J > 0:  min(J) = {j_min:.6e}  {'âœ“' if j_min > 0 else 'âœ—'}")
+    print(f"  J > 0:  min(J) = {j_min:.6e}  {'Ã¢Å“â€œ' if j_min > 0 else 'Ã¢Å“â€”'}")
 
     # Check Q positive definite at h-points
     Q11_h, Q12_h, Q22_h = [compute_metric(grids['xi1_h'], grids['xi2_h'])[i] for i in [1, 2, 3]]
     det_Q = Q11_h * Q22_h - Q12_h**2
     det_min = float(jnp.min(det_Q))
-    print(f"  Q p.d.: min(det Q) = {det_min:.6e}  {'âœ“' if det_min > 0 else 'âœ—'}")
+    print(f"  Q p.d.: min(det Q) = {det_min:.6e}  {'Ã¢Å“â€œ' if det_min > 0 else 'Ã¢Å“â€”'}")
 
-    # Check det(Q) = 1/JÂ²
+    # Check det(Q) = 1/JÃ‚Â²
     inv_J2 = 1.0 / Jh**2
     det_err = float(jnp.max(jnp.abs(det_Q - inv_J2) / inv_J2))
-    print(f"  det(Q) = 1/JÂ²: max rel err = {det_err:.2e}  {'âœ“' if det_err < 1e-12 else 'âœ—'}")
+    print(f"  det(Q) = 1/JÃ‚Â²: max rel err = {det_err:.2e}  {'Ã¢Å“â€œ' if det_err < 1e-12 else 'Ã¢Å“â€”'}")
 
     # Check shared vertices have same metric (equiangular property)
-    # Corner (-Ï€/4, -Ï€/4) is the same physical point for panels 0(SW), 2(SW?), 3(SW?)
+    # Corner (-Ãâ‚¬/4, -Ãâ‚¬/4) is the same physical point for panels 0(SW), 2(SW?), 3(SW?)
     # Since metric depends only on (xi1, xi2), all panels share the same values
     J_corner = float(Jh[0, 0])
     J_center = float(Jh[N // 2, N // 2])
     print(f"  J at corner: {J_corner:.6f}, at center: {J_center:.6f}")
-    J_corner_exact = 4 * np.sqrt(3) / 9  # 1/(3âˆš3Â·(1/4)) at (Ï€/4,Ï€/4)
-    print(f"  J_corner/J_center = {J_corner/J_center:.4f} (expect 4âˆš3/9 â‰ˆ {J_corner_exact:.4f})")
+    J_corner_exact = 4 * np.sqrt(3) / 9  # 1/(3Ã¢Ë†Å¡3Ã‚Â·(1/4)) at (Ãâ‚¬/4,Ãâ‚¬/4)
+    print(f"  J_corner/J_center = {J_corner/J_center:.4f} (expect 4Ã¢Ë†Å¡3/9 Ã¢â€°Ë† {J_corner_exact:.4f})")
 
     passed = j_min > 0 and det_min > 0 and det_err < 1e-12
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
@@ -670,7 +654,7 @@ def test_steady_state():
     print(f"  max|dv2/dt| = {max_dv2:.2e}")
 
     passed = max_dh < 1e-12 and max_dv1 < 1e-12 and max_dv2 < 1e-12
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
@@ -696,7 +680,7 @@ def test_projection():
 
     xi_v = grids['xi_v']
 
-    # Set h = Yâ‚â° âˆ Z on the sphere (continuous, smooth)
+    # Set h = YÃ¢â€šÂÃ¢ÂÂ° Ã¢Ë†Â Z on the sphere (continuous, smooth)
     h = jnp.zeros((6, N + 1, N + 1))
     for p in range(6):
         xi1_2d, xi2_2d = jnp.meshgrid(xi_v, xi_v, indexing='ij')
@@ -730,7 +714,7 @@ def test_projection():
     print(f"  Found {len(corners)} corner groups of 3")
 
     passed = max_jump < 1e-14 and max_corner < 1e-14
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
@@ -740,7 +724,7 @@ def test_projection():
 
 def test_mass_conservation():
     """
-    Gaussian perturbation on one panel â†’ gravity waves.
+    Gaussian perturbation on one panel Ã¢â€ â€™ gravity waves.
     Check mass conservation over ~50 time steps.
     """
     print("\n" + "=" * 65)
@@ -795,7 +779,7 @@ def test_mass_conservation():
     passed = max_merr < 1e-10 and stable
     print(f"\n  Max mass error: {max_merr:.2e}")
     print(f"  Stable: {'yes' if stable else 'NO'}")
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
@@ -808,7 +792,7 @@ def test_energy():
     Verify energy error scales with dt (spatial energy-exact).
     """
     print("\n" + "=" * 65)
-    print("TEST 5: Energy Conservation â€” CFL sweep")
+    print("TEST 5: Energy Conservation Ã¢â‚¬â€ CFL sweep")
     print("=" * 65)
 
     N = 12; H0 = 1.0; g = 1.0
@@ -848,7 +832,7 @@ def test_energy():
     jax.block_until_ready(_h)
     print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
 
-    print(f"\n  {'CFL':>6} {'dt':>12} {'steps':>7} {'Î”E/E':>12} {'rate':>8}")
+    print(f"\n  {'CFL':>6} {'dt':>12} {'steps':>7} {'ÃŽâ€E/E':>12} {'rate':>8}")
     print("  " + "-" * 50)
 
     for CFL in CFLs:
@@ -882,7 +866,7 @@ def test_energy():
 
     print(f"\n  dt-scaling rate: {final_rate:.2f}")
     passed = final_rate > 3.0
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
@@ -951,7 +935,7 @@ def test_gravity_wave():
     print(f"  Panel maxima: {['%.2e' % m for m in panel_max]}")
 
     passed = stable and n_active >= 4 and mass_err < 1e-8
-    print(f"  {'âœ“ PASS' if passed else 'âœ— FAIL'}")
+    print(f"  {'Ã¢Å“â€œ PASS' if passed else 'Ã¢Å“â€” FAIL'}")
     return passed
 
 
