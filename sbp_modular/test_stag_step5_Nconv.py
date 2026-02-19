@@ -1015,6 +1015,8 @@ def test_convergence(variant=1):
         t0 = _time.time()
         for s in range(1, nsteps):
             h, v1, v2 = step_fn(h, v1, v2, dt)
+            if s%100==0:
+               print(f"steps = {s:5d}")
         jax.block_until_ready(h)
         run_t = _time.time() - t0
         print(f"  (run {run_t:.1f}s)", flush=True)
