@@ -1,12 +1,43 @@
 """
 Cubed-Sphere Panel Connectivity
 
-Defines the 12 inter-panel edges for the 6-panel cubed-sphere topology.
+Face layout (current numbering):
+        0
+    1  2  3  4
+        5
+
+  Face 0: +Z (north pole)
+  Face 1: +Y
+  Face 2: -X
+  Face 3: -Y
+  Face 4: +X
+  Face 5: -Z (south pole)
+
+Each face maps (xi1, xi2) to (X,Y,Z) = FACE_MATRIX[face_id] @ (t1/d, t2/d, 1/d)
+where t1=tan(xi1), t2=tan(xi2), d=sqrt(1+t1^2+t2^2).
+On every face, xi1 increases eastward and xi2 increases toward the north pole.
 
 Edge format: (panel_a, edge_a, panel_b, edge_b, op)
   op: 'N'=identity, 'R'=reverse, 'T'=axis swap, 'TR'=axis swap + reverse
   Index mapping: 'N','T' -> k<->k; 'R','TR' -> k<->(N-k)
 """
+
+# ============================================================
+# Face geometry: (X,Y,Z) = FACE_MATRIX[face_id] @ (t1/d, t2/d, 1/d)
+# ============================================================
+
+FACE_MATRIX = [
+    [[ 1, 0, 0], [ 0, 1, 0], [ 0, 0, 1]],  # 0 +Z: ( t1/d,  t2/d,  1/d)
+    [[-1, 0, 0], [ 0, 0, 1], [ 0, 1, 0]],  # 1 +Y: (-t1/d,  1/d,   t2/d)
+    [[ 0, 0,-1], [-1, 0, 0], [ 0, 1, 0]],  # 2 -X: (-1/d,  -t1/d,  t2/d)
+    [[ 1, 0, 0], [ 0, 0,-1], [ 0, 1, 0]],  # 3 -Y: ( t1/d, -1/d,   t2/d)
+    [[ 0, 0, 1], [ 1, 0, 0], [ 0, 1, 0]],  # 4 +X: ( 1/d,   t1/d,  t2/d)
+    [[-1, 0, 0], [ 0, 1, 0], [ 0, 0,-1]],  # 5 -Z: (-t1/d,  t2/d, -1/d)
+]
+
+# ============================================================
+# 12 inter-panel edges
+# ============================================================
 
 EDGES = [
     (0, 'N', 1, 'N', 'R'),

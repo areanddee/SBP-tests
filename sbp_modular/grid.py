@@ -12,13 +12,15 @@ Face assignments:
   Face 4: +X
   Face 5: -Z (south pole)
 
-Note: On Face 0, xi1 varies along rows (→X), xi2 varies along columns (→Y).
+Note: On Face 0, xi1 varies along rows (â†’X), xi2 varies along columns (â†’Y).
 Each face has its own (xi1, xi2) to (X, Y, Z) mapping.
 """
 
 import jax
 import jax.numpy as jnp
 from typing import NamedTuple
+
+from connectivity import FACE_MATRIX
 
 
 class CubedSphereGrid(NamedTuple):
@@ -31,7 +33,7 @@ class CubedSphereGrid(NamedTuple):
     x2_h: jnp.ndarray  # [N, N]
     
     # Metric terms at cell centers
-    sqrt_G_h: jnp.ndarray     # Jacobian √G [N, N]
+    sqrt_G_h: jnp.ndarray     # Jacobian âˆšG [N, N]
     G11_contra_h: jnp.ndarray  # G^11 [N, N]
     G12_contra_h: jnp.ndarray  # G^12 [N, N]
     G22_contra_h: jnp.ndarray  # G^22 [N, N]
@@ -40,37 +42,26 @@ class CubedSphereGrid(NamedTuple):
 def equiangular_to_cartesian(xi1, xi2, face_id):
     """
     Convert equiangular coordinates to Cartesian (X, Y, Z) on unit sphere.
-    
-    VERIFIED: All 12 edge connections match physically.
-    
+
+    Uses FACE_MATRIX from connectivity.py:
+        (X, Y, Z) = FACE_MATRIX[face_id] @ (t1/d, t2/d, 1/d)
+
     Args:
-        xi1, xi2: Equiangular coordinates in [-π/4, π/4]
+        xi1, xi2: Equiangular coordinates in [-pi/4, pi/4]
         face_id: Panel index 0-5
-        
+
     Returns:
         X, Y, Z: Cartesian coordinates on unit sphere
     """
     t1 = jnp.tan(xi1)
     t2 = jnp.tan(xi2)
     d = jnp.sqrt(1.0 + t1**2 + t2**2)
-    
-    if face_id == 0:    # +Z (north pole)
-        X, Y, Z = t1/d, t2/d, 1/d
-    elif face_id == 1:  # +Y
-        X, Y, Z = -t1/d, 1/d, t2/d
-    elif face_id == 2:  # -X
-        X, Y, Z = -1/d, -t1/d, t2/d
-    elif face_id == 3:  # -Y
-        X, Y, Z = t1/d, -1/d, t2/d
-    elif face_id == 4:  # +X
-        X, Y, Z = 1/d, t1/d, t2/d
-    elif face_id == 5:  # -Z (south pole)
-        X, Y, Z = -t1/d, t2/d, -1/d
-    else:
-        raise ValueError(f"Invalid face_id: {face_id}")
-    
-    return X, Y, Z
 
+    raw = jnp.stack([t1/d, t2/d, 1.0/d])
+    M = jnp.array(FACE_MATRIX[face_id])
+    r = jnp.einsum('ij,j...->i...', M, raw)
+
+    return r[0], r[1], r[2]
 
 def compute_metric_at_points(x1, x2):
     """
@@ -87,7 +78,7 @@ def compute_metric_at_points(x1, x2):
     r_squared = 1.0 + tan_x1**2 + tan_x2**2
     r = jnp.sqrt(r_squared)
     
-    # Jacobian √G = 1 / (r³ cos²x1 cos²x2)
+    # Jacobian âˆšG = 1 / (rÂ³ cosÂ²x1 cosÂ²x2)
     sqrt_G = 1.0 / (r**3 * cos_x1**2 * cos_x2**2)
     
     # Contravariant metric G^ij
@@ -144,4 +135,4 @@ if __name__ == "__main__":
     N = 16
     grid = make_cubed_sphere_grid(N)
     print(f"\nGrid N={N}, dx={grid.dx:.4f} rad")
-    print(f"√G range: [{float(grid.sqrt_G_h.min()):.4f}, {float(grid.sqrt_G_h.max()):.4f}]")
+    print(f"âˆšG range: [{float(grid.sqrt_G_h.min()):.4f}, {float(grid.sqrt_G_h.max()):.4f}]")
