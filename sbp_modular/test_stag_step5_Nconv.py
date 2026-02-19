@@ -518,7 +518,16 @@ def make_rk4_step(rhs_fn):
         return (h  + (dt/6)*(k1h  + 2*k2h  + 2*k3h  + k4h),
                 v1 + (dt/6)*(k1v1 + 2*k2v1 + 2*k3v1 + k4v1),
                 v2 + (dt/6)*(k1v2 + 2*k2v2 + 2*k3v2 + k4v2))
-    return step
+
+    @partial(jax.jit, static_argnums=(4,))
+    def run_n_steps(h, v1, v2, dt, nsteps):
+        """Run nsteps RK4 steps entirely on-device via lax.fori_loop."""
+        def body(i, state):
+            h, v1, v2 = state
+            return step(h, v1, v2, dt)
+        return jax.lax.fori_loop(0, nsteps, body, (h, v1, v2))
+
+    return step, run_n_steps
 
 
 # ============================================================
@@ -739,7 +748,7 @@ def test_mass_conservation():
     v2 = jnp.zeros((6, N + 1, N))
 
     mass0 = compute_mass(h, Wh, Jh)
-    step_fn = make_rk4_step(sys_d['rhs'])
+    step_fn, _ = make_rk4_step(sys_d['rhs'])
 
     c = np.sqrt(g * H0)
     CFL = 0.3
@@ -808,7 +817,7 @@ def test_energy():
                         metrics, Pvc, Pcv)
 
     c = np.sqrt(g * H0)
-    step_fn = make_rk4_step(sys_d['rhs'])
+    step_fn, _ = make_rk4_step(sys_d['rhs'])
 
     CFLs = [0.4, 0.2, 0.1, 0.05]
     T_end = 20 * dx / c  # short integration
@@ -890,7 +899,7 @@ def test_gravity_wave():
 
     mass0 = compute_mass(h, Wh, Jh)
     max0 = float(jnp.max(jnp.abs(h)))
-    step_fn = make_rk4_step(sys_d['rhs'])
+    step_fn, _ = make_rk4_step(sys_d['rhs'])
 
     c = np.sqrt(g * H0)
     CFL = 0.3
@@ -1001,22 +1010,19 @@ def test_convergence(variant=1):
 
         h, v1, v2 = make_gaussian_ic(N, grids)
         mass0 = compute_mass(h, sys_d['Wh'], sys_d['Jh'])
-        step_fn = make_rk4_step(sys_d['rhs'])
+        step_fn, run_n_steps = make_rk4_step(sys_d['rhs'])
 
         print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, CFL = {CFL:.4e}, steps = {nsteps}",
               end='', flush=True)
 
         t0 = _time.time()
-        h, v1, v2 = step_fn(h, v1, v2, dt)  # JIT warmup
+        h, v1, v2 = step_fn(h, v1, v2, dt)  # JIT warmup (1 step)
         jax.block_until_ready(h)
         jit_t = _time.time() - t0
         print(f"  (JIT {jit_t:.1f}s)", end='', flush=True)
 
         t0 = _time.time()
-        for s in range(1, nsteps):
-            h, v1, v2 = step_fn(h, v1, v2, dt)
-            if s%100==0:
-               print(f"steps = {s:5d}")
+        h, v1, v2 = run_n_steps(h, v1, v2, dt, nsteps - 1)  # remaining steps on-device
         jax.block_until_ready(h)
         run_t = _time.time() - t0
         print(f"  (run {run_t:.1f}s)", flush=True)
