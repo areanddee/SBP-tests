@@ -82,7 +82,8 @@ echo "Dir:  \$(pwd)"
 echo "=============================================="
 
 # Activate conda environment
-source activate jax-sbp 2>/dev/null || conda activate jax-sbp 2>/dev/null
+module load miniconda3/24.3.0 && conda activate jax-sbp
+#source activate jax-sbp 2>/dev/null || conda activate jax-sbp 2>/dev/null
 
 cd ${PWD}
 python ${SCRIPT} ${SCRIPT_ARGS}
