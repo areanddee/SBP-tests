@@ -261,20 +261,37 @@ def verify_wavespeed():
 
 
 def demo_solution():
-    """Generate exact solution snapshots."""
+    """Generate exact solution snapshots for both IC sets."""
     print("=" * 65)
-    print("  Demo: exact solution at T=25 (Shashkin comparison time)")
+    print("  Demo: exact solutions at T=25")
     print("=" * 65)
 
-    sol = ExactGaussianWave(amp=0.01, sigma=0.3, c=1.0, a=1.0,
-                            L_max=200, n_quad=400)
+    # Our test IC
+    sol1 = ExactGaussianWave(amp=0.01, sigma=0.3, c=1.0, a=1.0,
+                              center_xyz=(0, 0, 1), L_max=200, n_quad=400)
+    print(f"\n  --- Our IC (amp=0.01, σ=0.3, center=pole) ---")
+    print(f"  h(θ=0,   t=25) = {sol1.evaluate(0.0, t=25.0):.6e}")
+    print(f"  h(θ=π,   t=25) = {sol1.evaluate(np.pi, t=25.0):.6e}")
+    print(f"  max|h(t=25)| = {np.max(np.abs(sol1.evaluate(np.linspace(0,np.pi,500), 25.0))):.6e}")
 
-    # At T=25, with c=1, a=1, the wave has made ~25/(2π) ≈ 4 full transits
-    theta = np.linspace(0, np.pi, 500)
-    h = sol.evaluate(theta, t=25.0)
-    print(f"  At t=25.0: max|h| = {np.max(np.abs(h)):.6e}")
-    print(f"  h at center (θ=0): {sol.evaluate(0.0, t=25.0):.6e}")
-    print(f"  h at antipode (θ=π): {sol.evaluate(np.pi, t=25.0):.6e}")
+    # Shashkin IC: h₀ = exp(-16θ²) → σ = 1/(4√2), amp = 1.0
+    sigma_sh = 1.0 / (4 * np.sqrt(2))
+    sol2 = ExactGaussianWave(amp=1.0, sigma=sigma_sh, c=1.0, a=1.0,
+                              center_xyz=(0, 0, 1), L_max=200, n_quad=400)
+    print(f"\n  --- Shashkin IC (amp=1.0, σ={sigma_sh:.5f}, center=pole) ---")
+    print(f"  h(θ=0,   t=25) = {sol2.evaluate(0.0, t=25.0):.6e}")
+    print(f"  h(θ=π,   t=25) = {sol2.evaluate(np.pi, t=25.0):.6e}")
+    print(f"  max|h(t=25)| = {np.max(np.abs(sol2.evaluate(np.linspace(0,np.pi,500), 25.0))):.6e}")
+
+    # Variant 2: vertex-centered (use cube vertex coordinates)
+    # φ = arcsin(1/√3), λ = π/4 → Cartesian: (1/√3, 1/√3, 1/√3)
+    vert = np.array([1, 1, 1], dtype=np.float64) / np.sqrt(3)
+    sol3 = ExactGaussianWave(amp=0.01, sigma=0.3, c=1.0, a=1.0,
+                              center_xyz=vert, L_max=200, n_quad=400)
+    print(f"\n  --- Our IC at cube vertex ({vert[0]:.4f}, {vert[1]:.4f}, {vert[2]:.4f}) ---")
+    print(f"  h at vertex,    t=25: {sol3.evaluate(0.0, t=25.0):.6e}")
+    print(f"  h at anti-vertex, t=25: {sol3.evaluate(np.pi, t=25.0):.6e}")
+
     print()
 
 

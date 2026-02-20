@@ -32,6 +32,14 @@ from sbp_staggered_1d import sbp_42
 from test_stencil_extraction import extract_stencil
 
 
+def get_device_info():
+    """Return (platform, device_name) for reporting."""
+    dev = jax.devices()[0]
+    platform = dev.platform.upper()  # 'CPU', 'GPU', 'TPU'
+    name = getattr(dev, 'device_kind', str(dev))
+    return platform, name
+
+
 # ============================================================
 # Prepare stencil for JAX (convert boundary to dense submatrices)
 # ============================================================
@@ -302,9 +310,11 @@ def test_correctness_ax1():
 
 
 def test_performance():
-    """Timing comparison: dense vs slice vs conv at N=384."""
+    """Timing comparison: dense vs slice vs conv."""
+    platform, dev_name = get_device_info()
+
     print("\n" + "=" * 65)
-    print("TEST 3: Performance — N=384 (100 reps, CPU)")
+    print(f"TEST 3: Performance — N=384 (100 reps, {platform}: {dev_name})")
     print("=" * 65)
 
     N = 384; M = N + 1
@@ -388,8 +398,10 @@ def test_performance():
 # ============================================================
 
 if __name__ == "__main__":
+    platform, dev_name = get_device_info()
     print("=" * 65)
     print("  Sparse Apply Tests")
+    print(f"  Device: {platform} ({dev_name})")
     print("  Strategy A: slice-and-accumulate")
     print("  Strategy B: 1D convolution (ax0 only)")
     print("=" * 65)
