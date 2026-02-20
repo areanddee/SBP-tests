@@ -51,14 +51,38 @@ import jax.numpy as jnp
 import numpy as np
 from functools import partial
 
-from sbp_staggered_1d import sbp_42
+from operators import sbp_42
 from grid import equiangular_to_cartesian
 from sat_operators import build_cartesian_sat_fn
 
 # ============================================================
-# Connectivity (single source of truth: connectivity.py)
+# Connectivity: 12 cubed-sphere edges
 # ============================================================
-from connectivity import EDGES
+# Format: (panel_a, edge_a, panel_b, edge_b, op)
+# op: 'N'=identity, 'R'=reverse, 'T'=identity(axis swap), 'TR'=reverse(axis swap)
+# For index mapping: 'N','T' â†’ kâ†”k; 'R','TR' â†’ kâ†”(N-k)
+EDGES = [
+    (0, 'N', 1, 'N', 'R'),
+    (0, 'E', 4, 'N', 'T'),
+    (0, 'W', 2, 'N', 'TR'),
+    (0, 'S', 3, 'N', 'N'),
+    (1, 'E', 2, 'W', 'N'),
+    (1, 'S', 5, 'N', 'N'),
+    (1, 'W', 4, 'E', 'N'),
+    (2, 'E', 3, 'W', 'N'),
+    (2, 'S', 5, 'E', 'TR'),
+    (3, 'E', 4, 'W', 'N'),
+    (3, 'S', 5, 'S', 'R'),
+    (4, 'S', 5, 'W', 'T'),
+]
+
+# 8 corners: each shared by 3 panels
+# Format: [(panel, i, j), ...] for each corner
+CORNERS = [
+    [(0, 0, 0), (2, 0, 0), (3, 0, 0)],       # corner where F0-SW, F2-SW(?), F3-SW(?) meet -- we need to figure these out from the edges
+]
+# We'll compute corners from edge connectivity below
+
 
 def _reverses(op):
     """Does this operation reverse the index order?"""
@@ -518,16 +542,7 @@ def make_rk4_step(rhs_fn):
         return (h  + (dt/6)*(k1h  + 2*k2h  + 2*k3h  + k4h),
                 v1 + (dt/6)*(k1v1 + 2*k2v1 + 2*k3v1 + k4v1),
                 v2 + (dt/6)*(k1v2 + 2*k2v2 + 2*k3v2 + k4v2))
-
-    @partial(jax.jit, static_argnums=(4,))
-    def run_n_steps(h, v1, v2, dt, nsteps):
-        """Run nsteps RK4 steps entirely on-device via lax.fori_loop."""
-        def body(i, state):
-            h, v1, v2 = state
-            return step(h, v1, v2, dt)
-        return jax.lax.fori_loop(0, nsteps, body, (h, v1, v2))
-
-    return step, run_n_steps
+    return step
 
 
 # ============================================================
@@ -640,6 +655,14 @@ def test_steady_state():
     N = 16
     sys_d = make_cubed_sphere_swe(N, H0=1.0, g=1.0)
 
+    h_test = jnp.zeros((6, N+1, N+1)).at[0, N//2, N//2].set(0.1)
+    v1_test = jnp.zeros((6, N, N+1))
+    v2_test = jnp.zeros((6, N+1, N))
+    dh, dv1, dv2 = sys_d['rhs'](h_test, v1_test, v2_test)
+    print(f"  DEBUG dh:  norm={float(jnp.linalg.norm(dh)):.15e}  sum={float(jnp.sum(dh)):.15e}")
+    print(f"  DEBUG dv1: norm={float(jnp.linalg.norm(dv1)):.15e}")
+    print(f"  DEBUG dv2: norm={float(jnp.linalg.norm(dv2)):.15e}")
+
     h = jnp.ones((6, N + 1, N + 1))
     v1 = jnp.zeros((6, N, N + 1))
     v2 = jnp.zeros((6, N + 1, N))
@@ -748,7 +771,7 @@ def test_mass_conservation():
     v2 = jnp.zeros((6, N + 1, N))
 
     mass0 = compute_mass(h, Wh, Jh)
-    step_fn, _ = make_rk4_step(sys_d['rhs'])
+    step_fn = make_rk4_step(sys_d['rhs'])
 
     c = np.sqrt(g * H0)
     CFL = 0.3
@@ -765,6 +788,22 @@ def test_mass_conservation():
     h, v1, v2 = step_fn(h, v1, v2, dt)
     jax.block_until_ready(h)
     print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
+
+    # === DIAGNOSTIC: compare old vs new after one step ===
+    dh2, dv1_2, dv2_2 = sys_d['rhs'](h, v1, v2)
+    print(f"  DEBUG step1 dh:  norm={float(jnp.linalg.norm(dh2)):.15e}")
+    print(f"  DEBUG step1 dh:  sum ={float(jnp.sum(dh2)):.15e}")
+    # === END DIAGNOSTIC ===
+
+    v1c, v2c = jax.vmap(lambda a, b: compute_contravariant(a, b, sys_d['metrics'], sys_d['Pvc'], sys_d['Pcv']))(v1, v2)
+    print(f"  DEBUG v1c: norm={float(jnp.linalg.norm(v1c)):.15e}")
+    print(f"  DEBUG v2c: norm={float(jnp.linalg.norm(v2c)):.15e}")
+
+    u1 = sys_d['J1'] * v1c
+    u2 = sys_d['J2'] * v2c
+    ops = sys_d['ops']
+    div = jnp.einsum('ij,pjk->pik', ops.Dcv, u1) + jnp.einsum('pij,kj->pik', u2, ops.Dcv)
+    print(f"  DEBUG div pre-SAT:  sum={float(jnp.sum(div)):.15e}")
 
     max_merr = 0.0
     for s in range(1, nsteps):  # already did step 0 as warmup
@@ -817,7 +856,7 @@ def test_energy():
                         metrics, Pvc, Pcv)
 
     c = np.sqrt(g * H0)
-    step_fn, _ = make_rk4_step(sys_d['rhs'])
+    step_fn = make_rk4_step(sys_d['rhs'])
 
     CFLs = [0.4, 0.2, 0.1, 0.05]
     T_end = 20 * dx / c  # short integration
@@ -899,7 +938,7 @@ def test_gravity_wave():
 
     mass0 = compute_mass(h, Wh, Jh)
     max0 = float(jnp.max(jnp.abs(h)))
-    step_fn, _ = make_rk4_step(sys_d['rhs'])
+    step_fn = make_rk4_step(sys_d['rhs'])
 
     c = np.sqrt(g * H0)
     CFL = 0.3
@@ -1010,19 +1049,20 @@ def test_convergence(variant=1):
 
         h, v1, v2 = make_gaussian_ic(N, grids)
         mass0 = compute_mass(h, sys_d['Wh'], sys_d['Jh'])
-        step_fn, run_n_steps = make_rk4_step(sys_d['rhs'])
+        step_fn = make_rk4_step(sys_d['rhs'])
 
         print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, CFL = {CFL:.4e}, steps = {nsteps}",
               end='', flush=True)
 
         t0 = _time.time()
-        h, v1, v2 = step_fn(h, v1, v2, dt)  # JIT warmup (1 step)
+        h, v1, v2 = step_fn(h, v1, v2, dt)  # JIT warmup
         jax.block_until_ready(h)
         jit_t = _time.time() - t0
         print(f"  (JIT {jit_t:.1f}s)", end='', flush=True)
 
         t0 = _time.time()
-        h, v1, v2 = run_n_steps(h, v1, v2, dt, nsteps - 1)  # remaining steps on-device
+        for s in range(1, nsteps):
+            h, v1, v2 = step_fn(h, v1, v2, dt)
         jax.block_until_ready(h)
         run_t = _time.time() - t0
         print(f"  (run {run_t:.1f}s)", flush=True)
