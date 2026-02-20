@@ -32,7 +32,7 @@ case "$GPU_TYPE" in
         PARTITION="mb-h100"
         ;;
     a30)
-        PARTITION="mb-a100"
+        PARTITION="mb-a30"
         ;;
     a6000)
         PARTITION="mb-a6000"
