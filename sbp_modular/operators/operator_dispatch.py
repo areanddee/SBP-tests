@@ -28,17 +28,12 @@ Usage:
     l = op.l    # left extrapolation
     r = op.r    # right extrapolation
 """
-import sys
-import os
 import numpy as np
-
-project_dir = '/mnt/project'
-if os.path.isdir(project_dir) and project_dir not in sys.path:
-    sys.path.insert(0, project_dir)
 
 import jax
 import jax.numpy as jnp
-from sbp_staggered_1d import sbp_42
+
+from .sbp_staggered_1d import sbp_42
 
 
 # ============================================================

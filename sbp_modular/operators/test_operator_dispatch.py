@@ -16,18 +16,15 @@ import sys
 import os
 import time
 
-project_dir = '/mnt/project'
-if os.path.isdir(project_dir) and project_dir not in sys.path:
-    sys.path.insert(0, project_dir)
-
-sys.path.insert(0, '/home/claude')
+# Add parent directory so 'from operators import ...' works
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
 
-from operator_dispatch import make_operators, detect_backend
+from operators import make_operators, detect_backend
 
 
 def get_device_info():
