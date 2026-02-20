@@ -765,8 +765,10 @@ def test_mass_conservation():
     # Gaussian centered on panel 0
     h = jnp.zeros((6, N + 1, N + 1))
     xi1_2d, xi2_2d = jnp.meshgrid(xi_v, xi_v, indexing='ij')
-    sigma = 0.2  # broad enough to be well-resolved
-    h = h.at[0].set(0.1 * jnp.exp(-(xi1_2d**2 + xi2_2d**2) / (2 * sigma**2)))
+    # New (Shashkin Eq. 84):
+    sigma = 1.0 / (4.0 * np.sqrt(2.0))   # ≈ 0.17678
+    amp = 1.0
+    h = h.at[0].set(amp * jnp.exp(-(xi1_2d**2 + xi2_2d**2) / (2 * sigma**2)))
     v1 = jnp.zeros((6, N, N + 1))
     v2 = jnp.zeros((6, N + 1, N))
 
@@ -1020,8 +1022,9 @@ def test_convergence(variant=1):
         h_ic = jnp.zeros((6, N_loc + 1, N_loc + 1))
         v1_ic = jnp.zeros((6, N_loc, N_loc + 1))
         v2_ic = jnp.zeros((6, N_loc + 1, N_loc))
-        sigma = 0.3
-        amp = 0.01
+        # New (Shashkin Eq. 84):
+        sigma = 1.0 / (4.0 * np.sqrt(2.0))   # ≈ 0.17678
+        amp = 1.0
         if variant == 1:
             X0, Y0, Z0 = 0.0, 0.0, 1.0
         else:

@@ -655,6 +655,14 @@ def test_steady_state():
     N = 16
     sys_d = make_cubed_sphere_swe(N, H0=1.0, g=1.0)
 
+    h_test = jnp.zeros((6, N+1, N+1)).at[0, N//2, N//2].set(0.1)
+    v1_test = jnp.zeros((6, N, N+1))
+    v2_test = jnp.zeros((6, N+1, N))
+    dh, dv1, dv2 = sys_d['rhs'](h_test, v1_test, v2_test)
+    print(f"  DEBUG dh:  norm={float(jnp.linalg.norm(dh)):.15e}  sum={float(jnp.sum(dh)):.15e}")
+    print(f"  DEBUG dv1: norm={float(jnp.linalg.norm(dv1)):.15e}")
+    print(f"  DEBUG dv2: norm={float(jnp.linalg.norm(dv2)):.15e}")
+
     h = jnp.ones((6, N + 1, N + 1))
     v1 = jnp.zeros((6, N, N + 1))
     v2 = jnp.zeros((6, N + 1, N))
@@ -780,6 +788,22 @@ def test_mass_conservation():
     h, v1, v2 = step_fn(h, v1, v2, dt)
     jax.block_until_ready(h)
     print(f"  JIT compiled in {_time.time()-t0:.1f}s", flush=True)
+
+    # === DIAGNOSTIC: compare old vs new after one step ===
+    dh2, dv1_2, dv2_2 = sys_d['rhs'](h, v1, v2)
+    print(f"  DEBUG step1 dh:  norm={float(jnp.linalg.norm(dh2)):.15e}")
+    print(f"  DEBUG step1 dh:  sum ={float(jnp.sum(dh2)):.15e}")
+    # === END DIAGNOSTIC ===
+
+    v1c, v2c = jax.vmap(lambda a, b: compute_contravariant(a, b, sys_d['metrics'], sys_d['Pvc'], sys_d['Pcv']))(v1, v2)
+    print(f"  DEBUG v1c: norm={float(jnp.linalg.norm(v1c)):.15e}")
+    print(f"  DEBUG v2c: norm={float(jnp.linalg.norm(v2c)):.15e}")
+
+    u1 = sys_d['J1'] * v1c
+    u2 = sys_d['J2'] * v2c
+    ops = sys_d['ops']
+    div = jnp.einsum('ij,pjk->pik', ops.Dcv, u1) + jnp.einsum('pij,kj->pik', u2, ops.Dcv)
+    print(f"  DEBUG div pre-SAT:  sum={float(jnp.sum(div)):.15e}")
 
     max_merr = 0.0
     for s in range(1, nsteps):  # already did step 0 as warmup
