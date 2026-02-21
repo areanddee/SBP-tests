@@ -1029,7 +1029,7 @@ def test_convergence(variant=1):
             X0, Y0, Z0 = 0.0, 0.0, 1.0
         else:
             X0, Y0, Z0 = equiangular_to_cartesian(
-                jnp.array(jnp.pi / 4), jnp.array(jnp.pi / 4), 0)
+                jnp.array(jnp.pi / 4 - 0.1), jnp.array(jnp.pi / 4 - 0.1), 0)
             X0, Y0, Z0 = float(X0), float(Y0), float(Z0)
         for p in range(6):
             X, Y, Z = equiangular_to_cartesian(xi1_2d, xi2_2d, p)
