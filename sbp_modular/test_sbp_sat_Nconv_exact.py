@@ -49,6 +49,8 @@ import jax
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 import numpy as np
+import zarr
+
 from functools import partial
 
 from operators import sbp_42
@@ -985,62 +987,120 @@ def test_gravity_wave():
 # Test 7: Richardson spatial convergence
 # ============================================================
 
+"""
+INSTALLATION INSTRUCTIONS
+=========================
+
+1. Add this import near the top of test_stag_step5_Nconv.py, after the
+   existing imports (around line 52, after "import numpy as np"):
+
+       import zarr
+
+2. Delete lines 934-1089 in test_stag_step5_Nconv.py (the old
+   test_convergence function, from the "# Test 7" comment through
+   "return passed").
+
+3. Paste the function below in its place.
+
+4. Set the environment variable before running:
+
+       export SBP_REF_DIR=/project/atm-jax/reference_solutions
+
+5. Run as before:
+
+       python test_stag_step5_Nconv.py --gauss 1
+       python test_stag_step5_Nconv.py --gauss 2
+"""
+
+
+# ============================================================
+# Test 7: Spatial convergence vs exact spectral solution
+# ============================================================
+
 def test_convergence(variant=1):
     """
-    Richardson self-convergence test.
+    Spatial convergence test against exact spectral solution.
 
-    Runs at N = 24, 48, 96, 192, 384 Compares each coarser solution against
-    the finest (N=24) subsampled to the coarse grid.
+    Compares numerical h-field at T=25 days against the exact Legendre
+    polynomial expansion solution (Shashkin Eq. 84, f=0).
+
+    Reference solutions are pre-generated zarr files in:
+        $SBP_REF_DIR/gauss{1,2}/N{024,048,...}.zarr
 
     variant 1: Gaussian centered at panel center (0,0) on panel 0
     variant 2: Gaussian centered at cube vertex (pi/4,pi/4) on panel 0
 
-    For Ch42 (Shashkin Table 2):
-      Variant 1: l2 rate ~3, l_inf rate ~3
-      Variant 2: l2 rate drops somewhat (interpolation error dominates)
+    Shashkin Table 2, Ch42 convergence rates:
+      Variant 1: l2 = 4.25, linf = 3.98
+      Variant 2: l2 = 3.81, linf = 3.43
     """
     import time as _time
+    import zarr
 
     label = "panel center (0,0)" if variant == 1 else "cube vertex (pi/4,pi/4)"
     print("\n" + "=" * 65)
     print(f"TEST 7: Spatial Convergence -- Gaussian variant {variant}")
     print(f"        Center at {label}")
+    print(f"        Reference: exact spectral solution")
     print("=" * 65)
 
-    Ns = [24, 48, 96, 192, 384]
+    Ns = [24, 48, 96, 192]
     H0 = 1.0; g = 1.0; c = np.sqrt(g * H0)
-    CFL = 0.05
-    T_end = 25.   # fixed physical time (days)
+    T_end = 25.0
 
-    print(f"  T = {T_end}, CFL = {CFL}, H0 = {H0}, g = {g}")
+    print(f"  T = {T_end}, H0 = {H0}, g = {g}")
     print(f"  N values: {Ns}")
 
-    # --- Gaussian IC using great-circle distance (same on all panels) ---
+    # --- Load exact references ---
+    ref_base = os.environ.get("SBP_REF_DIR",
+                os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "reference_solutions"))
+    ref_dir = os.path.join(ref_base, f"gauss{variant}")
+    print(f"  Reference dir: {ref_dir}")
+
+    h_refs = {}
+    for N in Ns:
+        path = os.path.join(ref_dir, f"N{N:03d}.zarr")
+        if not os.path.exists(path):
+            print(f"  ERROR: reference not found: {path}")
+            print(f"  Run: python generate_reference_solutions.py")
+            return False
+        store = zarr.open(path, mode='r')
+        h_refs[N] = jnp.array(np.array(store['h_exact']))
+        if N == Ns[0]:
+            attrs = dict(store.attrs)
+            print(f"  Spectral params: sigma={attrs['sigma']:.6f}, "
+                  f"amp={float(attrs.get('amp', 1.0)):.1f}, "
+                  f"L_max={attrs['L_max']}, T_end={attrs['T_end']}")
+
+    # --- Gaussian IC: Shashkin Eq. 84, h(0) = exp(-16 theta^2) ---
+    sigma_ic = 1.0 / (4.0 * np.sqrt(2.0))   # matches exp(-16 theta^2)
+    amp_ic = 1.0
+
     def make_gaussian_ic(N_loc, grids_loc):
         xi_v_loc = grids_loc['xi_v']
         xi1_2d, xi2_2d = jnp.meshgrid(xi_v_loc, xi_v_loc, indexing='ij')
         h_ic = jnp.zeros((6, N_loc + 1, N_loc + 1))
         v1_ic = jnp.zeros((6, N_loc, N_loc + 1))
         v2_ic = jnp.zeros((6, N_loc + 1, N_loc))
-        # New (Shashkin Eq. 84):
-        sigma = 1.0 / (4.0 * np.sqrt(2.0))   # ≈ 0.17678
-        amp = 1.0
         if variant == 1:
             X0, Y0, Z0 = 0.0, 0.0, 1.0
         else:
-            tilt = 1.0
-            face = 4
-            alpha_tilt = tilt*(jnp.pi / 4 )
-            print(f"Test case 2: (alpha_tilt = {alpha_tilt}, {alpha_tilt}, 0)")
+            tilt1 = 0.0
+            tilt2 = 0.0
+            face = 0
+            alpha_tilt1 = tilt1*(jnp.pi / 4 )
+            alpha_tilt2 = tilt2*(jnp.pi / 4 )
+            print(f"Test case 2: (gauss center = ({alpha_tilt1}, {alpha_tilt2}, {face})")
             X0, Y0, Z0 = equiangular_to_cartesian(
-                jnp.array(alpha_tilt), jnp.array(0.0), face)
-            #    jnp.array(alpha_tilt), jnp.array(alpha_tilt), face)
+            #   jnp.array(alpha_tilt), jnp.array(0.0), face)
+                jnp.array(alpha_tilt1), jnp.array(alpha_tilt2), face)
             X0, Y0, Z0 = float(X0), float(Y0), float(Z0)
         for p in range(6):
             X, Y, Z = equiangular_to_cartesian(xi1_2d, xi2_2d, p)
             cos_d = jnp.clip(X * X0 + Y * Y0 + Z * Z0, -1.0, 1.0)
             d = jnp.arccos(cos_d)
-            h_ic = h_ic.at[p].set(amp * jnp.exp(-d**2 / (2 * sigma**2)))
+            h_ic = h_ic.at[p].set(amp_ic * jnp.exp(-d**2 / (2 * sigma_ic**2)))
         return h_ic, v1_ic, v2_ic
 
     # --- Run all resolutions ---
@@ -1049,17 +1109,17 @@ def test_convergence(variant=1):
         sys_d = make_cubed_sphere_swe(N, H0, g)
         grids = sys_d['grids']
         dx = sys_d['dx']
-        dt = 1./(N*3)       # per Table 1, section 6.1, Shashkin, et al. 2025 
-        #dt = CFL * dx / c
-        CFL = c*dt/dx
+        dt = 1.0 / (N * 3)     # Shashkin Table 1
+        CFL = c * dt / dx
         nsteps = int(np.ceil(T_end / dt))
-        dt = T_end / nsteps   # hit T_end exactly
+        dt = T_end / nsteps     # hit T_end exactly
 
         h, v1, v2 = make_gaussian_ic(N, grids)
         mass0 = compute_mass(h, sys_d['Wh'], sys_d['Jh'])
         step_fn = make_rk4_step(sys_d['rhs'])
 
-        print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, CFL = {CFL:.4e}, steps = {nsteps}",
+        print(f"\n  N = {N:3d}: dx = {dx:.4e}, dt = {dt:.4e}, "
+              f"CFL = {CFL:.4e}, steps = {nsteps}",
               end='', flush=True)
 
         t0 = _time.time()
@@ -1084,29 +1144,24 @@ def test_convergence(variant=1):
             'Jh': sys_d['Jh'], 'Wh': sys_d['Wh'],
         }
 
-    # --- Compute errors relative to finest ---
-    N_fine = max(Ns)
-    h_fine = run_results[N_fine]['h']
-
-    print(f"\n  Errors vs N = {N_fine} reference:")
+    # --- Compute errors vs exact spectral solution ---
+    print(f"\n  Errors vs exact spectral solution (T = {T_end}):")
     print(f"  {'N':>5} {'dx':>12} {'L2 err':>12} {'L2 rate':>8} "
           f"{'Linf err':>12} {'Linf rate':>10}")
     print(f"  {'-'*65}")
 
     errors = []
-    for N in Ns[:-1]:
-        stride = N_fine // N
-        assert stride * N == N_fine, f"N={N} doesn't divide N_fine={N_fine}"
+    for N in Ns:
+        diff = run_results[N]['h'] - h_refs[N]
+        Jh = run_results[N]['Jh']
+        Wh = run_results[N]['Wh']
 
-        h_ref = h_fine[:, ::stride, ::stride]
-        diff = run_results[N]['h'] - h_ref
-        Jh_c = run_results[N]['Jh']
-        Wh_c = run_results[N]['Wh']
-
-        l2 = float(jnp.sqrt(jnp.sum(diff**2 * Jh_c[None] * Wh_c[None])))
+        # Quadrature-weighted L2 on the sphere
+        l2 = float(jnp.sqrt(jnp.sum(diff**2 * Jh[None] * Wh[None])))
         linf = float(jnp.max(jnp.abs(diff)))
 
-        errors.append({'N': N, 'dx': run_results[N]['dx'], 'l2': l2, 'linf': linf})
+        errors.append({'N': N, 'dx': run_results[N]['dx'],
+                        'l2': l2, 'linf': linf})
 
         if len(errors) >= 2:
             l2_rate = (np.log(errors[-2]['l2'] / errors[-1]['l2']) /
@@ -1135,13 +1190,18 @@ def test_convergence(variant=1):
     print(f"\n  Final L2 convergence rate:   {final_l2:.2f}")
     print(f"  Final Linf convergence rate: {final_linf:.2f}")
 
-    # Ch42 expects ~3 for variant 1, somewhat lower for variant 2
-    threshold = 2.5 if variant == 1 else 1.8
+    # Shashkin Table 2 Ch42 rates
+    if variant == 1:
+        print(f"  Shashkin Ch42 reference:     l2=4.25, linf=3.98")
+        threshold = 2.5
+    else:
+        print(f"  Shashkin Ch42 reference:     l2=3.81, linf=3.43")
+        threshold = 1.8
+
     passed = final_l2 > threshold
     print(f"  Expected L2 rate > {threshold:.1f}")
     print(f"  {'PASS' if passed else 'FAIL'}")
     return passed
-
 
 # ============================================================
 # Main

@@ -1,0 +1,154 @@
+==============================================
+Job: sbp-h100-test_stag_step5_Nconv (ID: 51274615)
+Node: mbh100-002.cluster
+GPU:  NVIDIA H100 80GB HBM3
+Date: Sat Feb 21 09:39:46 MST 2026
+Dir:  /home/richardloft/SBP-tests/sbp_modular
+==============================================
+=================================================================
+  STEP 5: 6-Panel Cubed Sphere -- Metrics + SAT-Projection
+  SBP 4/2, f=0, Cartesian-averaged SAT
+  Reference: Shashkin 2025, Sections 3-5
+=================================================================
+
+=================================================================
+TEST 1: Metric Verification
+=================================================================
+  J > 0:  min(J) = 7.071068e-01  âœ“
+  Q p.d.: min(det Q) = 1.000000e+00  âœ“
+  det(Q) = 1/JÂ²: max rel err = 8.61e-16  âœ“
+  J at corner: 0.769800, at center: 1.000000
+  J_corner/J_center = 0.7698 (expect 4âˆš3/9 â‰ˆ 0.7698)
+  âœ“ PASS
+
+=================================================================
+TEST 2: Steady State (uniform h, v=0)
+=================================================================
+  DEBUG dh:  norm=0.000000000000000e+00  sum=0.000000000000000e+00
+  DEBUG dv1: norm=1.621680489795491e+00
+  DEBUG dv2: norm=1.621680489795491e+00
+  max|dh/dt|  = 0.00e+00
+  max|dv1/dt| = 2.22e-15
+  max|dv2/dt| = 2.22e-15
+  âœ“ PASS
+
+=================================================================
+TEST 3: h-Projection Connectivity
+=================================================================
+  Max edge discontinuity after projection: 0.00e+00
+  Max corner spread: 0.00e+00
+  Found 8 corner groups of 3
+  âœ“ PASS
+
+=================================================================
+TEST 4: Mass Conservation (Gaussian perturbation)
+=================================================================
+  N = 16, CFL = 0.3, dt = 2.945243e-02, steps = 100
+  Initial mass: 1.9051668895e-01
+  JIT compiling RK4 step (first call)...
+  JIT compiled in 15.3s
+  DEBUG step1 dh:  norm=4.171577436325561e+00
+  DEBUG step1 dh:  sum =1.175280306079398e+00
+  DEBUG v1c: norm=3.717902027393896e-01
+  DEBUG v2c: norm=3.717902029366550e-01
+  DEBUG div pre-SAT:  sum=4.833817658673771e-01
+  Step   25: mass_err = 5.55e-17, max|h| = 2.0720e-01
+  Step   50: mass_err = 2.78e-17, max|h| = 1.6873e-01
+  Step   75: mass_err = 5.55e-17, max|h| = 2.0760e-01
+  Step  100: mass_err = 0.00e+00, max|h| = 5.8404e-01
+
+  Max mass error: 5.55e-17
+  Stable: yes
+  âœ“ PASS
+
+=================================================================
+TEST 5: Energy Conservation â€” CFL sweep
+=================================================================
+  N = 12, T = 2.6180
+  JIT compiling...
+  JIT compiled in 15.3s
+
+     CFL           dt   steps        Î”E/E     rate
+  --------------------------------------------------
+   0.400 5.235988e-02      50   1.2430e-03      ---
+   0.200 2.617994e-02     100   4.0232e-05     4.95
+   0.100 1.308997e-02     200   1.2656e-06     4.99
+   0.050 6.544985e-03     400   3.9611e-08     5.00
+
+  dt-scaling rate: 5.00
+  âœ“ PASS
+
+=================================================================
+TEST 6: Gravity Wave on Cubed Sphere
+=================================================================
+  N = 16, CFL = 0.3
+  T = 3.14 (half circumference), steps = 107
+  Step    26/107: max|h| = 1.9266e-02, active panels = 5/6
+  Step    52/107: max|h| = 1.4750e-02, active panels = 6/6
+  Step    78/107: max|h| = 1.7850e-02, active panels = 6/6
+  Step   104/107: max|h| = 5.2663e-02, active panels = 6/6
+
+  Final max|h|: 2.4649e-02 (initial: 1.0000e-01)
+  Mass error: 0.00e+00
+  Stable: yes
+  Active panels: 6/6
+  Panel maxima: ['7.00e-03', '1.84e-02', '1.84e-02', '1.84e-02', '1.84e-02', '2.46e-02']
+  âœ“ PASS
+
+=================================================================
+TEST 7: Spatial Convergence -- Gaussian variant 2
+        Center at cube vertex (pi/4,pi/4)
+=================================================================
+  T = 25.0, CFL = 0.05, H0 = 1.0, g = 1.0
+  N values: [24, 48, 96, 192, 384]
+Test case 2: (alpha_tilt = 0.39269908169872414, 0.39269908169872414, 0)
+
+  N =  24: dx = 6.5450e-02, dt = 1.3889e-02, CFL = 2.1221e-01, steps = 1800  (JIT 17.2s)  (run 0.6s)
+         mass_err = 5.55e-17
+Test case 2: (alpha_tilt = 0.39269908169872414, 0.39269908169872414, 0)
+
+  N =  48: dx = 3.2725e-02, dt = 6.9444e-03, CFL = 2.1221e-01, steps = 3600  (JIT 14.8s)  (run 2.0s)
+         mass_err = 2.78e-17
+Test case 2: (alpha_tilt = 0.39269908169872414, 0.39269908169872414, 0)
+
+  N =  96: dx = 1.6362e-02, dt = 3.4722e-03, CFL = 2.1221e-01, steps = 7200  (JIT 15.7s)  (run 4.4s)
+         mass_err = 5.55e-17
+Test case 2: (alpha_tilt = 0.39269908169872414, 0.39269908169872414, 0)
+
+  N = 192: dx = 8.1812e-03, dt = 1.7361e-03, CFL = 2.1221e-01, steps = 14400  (JIT 20.9s)  (run 12.4s)
+         mass_err = 1.11e-16
+Test case 2: (alpha_tilt = 0.39269908169872414, 0.39269908169872414, 0)
+
+  N = 384: dx = 4.0906e-03, dt = 8.6806e-04, CFL = 2.1221e-01, steps = 28800  (JIT 23.4s)  (run 61.1s)
+         mass_err = 5.55e-17
+
+  Errors vs N = 384 reference:
+      N           dx       L2 err  L2 rate     Linf err  Linf rate
+  -----------------------------------------------------------------
+     24   6.5450e-02   2.2052e-02      ---   2.6487e-02        ---
+     48   3.2725e-02   2.0179e-03     3.45   2.2148e-03       3.58
+     96   1.6362e-02   5.3016e-04     1.93   8.6881e-04       1.35
+    192   8.1812e-03   2.2099e-04     1.26   4.5259e-04       0.94
+
+  Final L2 convergence rate:   1.26
+  Final Linf convergence rate: 0.94
+  Expected L2 rate > 1.8
+  FAIL
+
+=================================================================
+  SUMMARY
+=================================================================
+  metrics         PASS
+  steady          PASS
+  projection      PASS
+  mass            PASS
+  energy          PASS
+  gravity         PASS
+  converge_v2     FAIL
+
+  Some tests failed. Fix before proceeding.
+=================================================================
+
+==============================================
+Finished: Sat Feb 21 09:44:18 MST 2026
+==============================================

@@ -57,8 +57,8 @@ echo "Requesting $GPU_TYPE GPU..."
 echo ""
 srun --partition=$PARTITION \
      --account=$ACCOUNT \
-     --gres=gpu:1 \
-     --ntasks-per-gpu=12 \
+     --gres=gpu:$GPU_TYPE:3 \
+     --ntasks=1 \
      --mem-per-gpu=128G \
      --time=${HOURS}:00:00 \
      --pty bash
