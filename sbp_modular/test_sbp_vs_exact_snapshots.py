@@ -507,7 +507,14 @@ def run_sbp_with_snapshots(N, center_xyz, output_times, sol,
 
     # Time step: dt = 1/(3N) per Shashkin Table 1
     dt = 1.0 / (N * 3)
-    output_times = [i * dt for i in range(args.nsteps + 1)]
+    if args.nsteps is not None:
+       N_ref = args.Ns[0]
+       dt = 1.0 / (N_ref * 3)
+       output_times = [i * dt for i in range(args.nsteps + 1)]
+    elif args.times is not None:
+       output_times = args.times
+    else:
+       output_times = [0.0, 0.25, 0.5, 0.75, 1.0]
     CFL = c * dt / dx
     print(f" dx={dx:.4e}, dt={dt:.4e}, CFL={CFL:.4e}")
 
@@ -722,10 +729,12 @@ def main():
                         help='xi2 tilt (radians, raw)')
     parser.add_argument('--face', type=int, default=0,
                         help='Panel for custom center (default: 0)')
+    parser.add_argument('--times', nargs='+', type=float, default=None,
+                        help='Output times in days')
     parser.add_argument('--Ns', nargs='+', type=int, default=[48, 96],
                         help='Grid resolutions (default: 48 96)')
     parser.add_argument('--nsteps', type=int, default=None,
-                    help='Output first N steps (overrides --times)')
+                        help='Output first N steps (overrides --times)')
     parser.add_argument('--outdir', default=None,
                         help='Output directory (auto-generated if not set)')
     args = parser.parse_args()
