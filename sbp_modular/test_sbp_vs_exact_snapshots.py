@@ -33,7 +33,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
-from sbp_staggered_1d import sbp_42
+from operators import sbp_42
 from grid import equiangular_to_cartesian
 from sat_operators import build_cartesian_sat_fn
 
